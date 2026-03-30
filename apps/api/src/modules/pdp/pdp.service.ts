@@ -32,6 +32,7 @@ export class PdpService {
   async analyzeProduct(request: PdpAnalyzeRequest) {
     const normalizedImage = sanitizeBase64Payload(request.imageBase64);
     const mimeType = normalizeMimeType(request.mimeType);
+    const referenceModelImage = normalizeReferenceModelImage(request.modelImageBase64, request.modelImageMimeType);
     const client = this.getClient();
 
     const blueprint = await retryOperation(async () => {
@@ -46,7 +47,7 @@ export class PdpService {
               }
             },
             {
-              text: buildAnalyzePrompt(request.additionalInfo, request.desiredTone)
+              text: buildAnalyzePrompt(request.additionalInfo, request.desiredTone, Boolean(referenceModelImage))
             }
           ]
         },
@@ -81,13 +82,21 @@ export class PdpService {
                     section_name: { type: Type.STRING },
                     goal: { type: Type.STRING },
                     headline: { type: Type.STRING },
+                    headline_en: { type: Type.STRING },
                     subheadline: { type: Type.STRING },
+                    subheadline_en: { type: Type.STRING },
                     bullets: {
                       type: Type.ARRAY,
                       items: { type: Type.STRING }
                     },
+                    bullets_en: {
+                      type: Type.ARRAY,
+                      items: { type: Type.STRING }
+                    },
                     trust_or_objection_line: { type: Type.STRING },
+                    trust_or_objection_line_en: { type: Type.STRING },
                     CTA: { type: Type.STRING },
+                    CTA_en: { type: Type.STRING },
                     layout_notes: { type: Type.STRING },
                     compliance_notes: { type: Type.STRING },
                     image_id: { type: Type.STRING },
@@ -131,7 +140,9 @@ export class PdpService {
         modelAgeRange: "20s",
         modelCountry: "korea",
         headline: firstSection.headline,
-        subheadline: firstSection.subheadline
+        subheadline: firstSection.subheadline,
+        referenceModelImageBase64: referenceModelImage?.base64,
+        referenceModelImageMimeType: referenceModelImage?.mimeType
       }
     });
 
@@ -183,20 +194,37 @@ export class PdpService {
     const prompt = buildImagePrompt(section.prompt_en, request.desiredTone, request.options);
 
     return retryOperation(async () => {
+      const parts: Array<{ inlineData?: { mimeType: string; data: string }; text?: string }> = [
+        {
+          inlineData: {
+            mimeType: DEFAULT_IMAGE_MIME,
+            data: originalImageBase64
+          }
+        }
+      ];
+
+      const normalizedReferenceModel = normalizeReferenceModelImage(
+        request.options?.referenceModelImageBase64,
+        request.options?.referenceModelImageMimeType
+      );
+
+      if (normalizedReferenceModel && request.options?.withModel) {
+        parts.push({
+          inlineData: {
+            mimeType: normalizedReferenceModel.mimeType,
+            data: normalizedReferenceModel.base64
+          }
+        });
+      }
+
+      parts.push({
+        text: prompt
+      });
+
       const response = await client.models.generateContent({
         model: IMAGE_MODEL,
         contents: {
-          parts: [
-            {
-              inlineData: {
-                mimeType: DEFAULT_IMAGE_MIME,
-                data: originalImageBase64
-              }
-            },
-            {
-              text: prompt
-            }
-          ]
+          parts
         },
         config: {
           imageConfig: {
@@ -315,21 +343,27 @@ function sanitizeBase64Payload(input: string) {
   return normalized;
 }
 
-function buildAnalyzePrompt(additionalInfo?: string, desiredTone?: string) {
+function buildAnalyzePrompt(additionalInfo?: string, desiredTone?: string, hasReferenceModel = false) {
   return `
 이 제품 이미지를 분석하여 4~6개의 핵심 섹션으로 구성된 상세페이지 전체 블루프린트를 설계해주세요.
 ${additionalInfo ? `[사용자 추가 정보]: ${additionalInfo}` : ""}
 ${desiredTone ? `[원하는 디자인 톤]: ${desiredTone}` : ""}
+${hasReferenceModel ? "[참고 모델 이미지가 함께 제공됨]: 모델이 포함되는 컷은 업로드된 reference model과 동일 인물/동일 성별/동일 인상으로 유지되도록 설계할 것." : ""}
 
 # 섹션 템플릿(필수 필드)
 - section_id: S1~S6
 - section_name: (예: 히어로/체크리스트/베네핏/근거/사용법/후기 등)
 - goal: 이 섹션의 역할(짧은 한 문장)
-- headline: 1줄(강하게)
-- subheadline: 1줄(명확하게)
-- bullets: 3개(스캔용, 각 1줄)
-- trust_or_objection_line: 불안 제거/신뢰 1문장
-- CTA: (있으면) 1줄
+- headline: 한국어 1줄(강하게)
+- headline_en: headline의 자연스러운 영어 번역 1줄
+- subheadline: 한국어 1줄(명확하게)
+- subheadline_en: subheadline의 자연스러운 영어 번역 1줄
+- bullets: 한국어 3개(스캔용, 각 1줄)
+- bullets_en: bullets의 자연스러운 영어 번역 3개
+- trust_or_objection_line: 한국어 불안 제거/신뢰 1문장
+- trust_or_objection_line_en: trust_or_objection_line의 자연스러운 영어 번역 1문장
+- CTA: (있으면) 한국어 1줄
+- CTA_en: CTA의 자연스러운 영어 번역 1줄
 - layout_notes: 이미지 레이아웃 지시(짧게)
 - compliance_notes: 카테고리별 규제/표현 주의(짧게)
 
@@ -346,12 +380,14 @@ ${desiredTone ? `[원하는 디자인 톤]: ${desiredTone}` : ""}
 # 섹션별 이미지 생성 프롬프트
 - image_id: IMG_S1~IMG_S6
 - purpose: 이 이미지가 전달해야 하는 메시지(짧은 한 문장)
-- prompt_ko: 한국어 이미지 생성 프롬프트(1~2문장)
-- prompt_en: 영어 프롬프트(실제 이미지 생성용)
+- prompt_ko: 한국어 이미지 생성 프롬프트(1~2문장). 구도, 거리감, 시선 높이, 제품이 프레임에서 차지하는 비중을 함께 명시할 것.
+- prompt_en: 영어 프롬프트(실제 이미지 생성용). Include composition, framing distance, camera angle, and how the product should occupy the frame.
 - on_image_text: 이미지에 들어갈 문구와 텍스트 레이아웃 지시
 - negative_prompt: 피해야 할 요소
-- style_guide: 전체 통일 스타일
-- reference_usage: 업로드된 기존 제품 이미지를 어떻게 참고할지
+- style_guide: 전체 통일 스타일. 스튜디오는 정제된 세트/조명/질감, 라이프스타일은 현실감 있는 공간/행동, 아웃도어는 위치감/공기감/활동성을 분명히 적을 것.
+- reference_usage: 업로드된 기존 제품 이미지를 어떻게 참고할지. 제품 형태, 라벨, 재질, 색감을 유지하는 기준을 명시할 것.
+- section_name, goal, layout_notes, compliance_notes, purpose, on_image_text, style_guide, reference_usage는 반드시 한국어로 작성할 것
+- 영어는 *_en 필드와 prompt_en에만 사용할 것
 
 # 이미지 생성 공통 규칙
 - 세로형 상세페이지용
@@ -380,6 +416,13 @@ function buildImagePrompt(
     enhancedPrompt += ". ";
   }
 
+  if (options?.withModel && options.referenceModelImageBase64) {
+    enhancedPrompt +=
+      "Reference Inputs: image 1 is the original product reference and must preserve the exact product. image 2 is the mandatory model identity reference. ";
+    enhancedPrompt +=
+      "The final image MUST use the same person from image 2. Do not switch to a different model, do not change gender, and do not drift to a generic portrait face. ";
+  }
+
   if (options?.isRegeneration) {
     enhancedPrompt += "\n[USER OVERRIDE INSTRUCTIONS - STRICTLY FOLLOW THESE OVER ANY CONFLICTING BASE INSTRUCTIONS]\n";
     enhancedPrompt += buildImageStyleInstructions(options);
@@ -398,8 +441,14 @@ function buildImagePrompt(
     enhancedPrompt += buildImagePreferenceInstructions(options);
   }
 
+  enhancedPrompt += "\nComposition Rules: ";
   enhancedPrompt +=
-    "\nCRITICAL: The final image must look like a top-tier magazine advertisement or a premium brand's landing page hero shot. ";
+    "use a varied, intentional camera distance that matches the scene instead of defaulting to a chest-up portrait. ";
+  enhancedPrompt +=
+    "Depending on the section, use wide shots, medium shots, tabletop/product detail shots, hands-in-frame moments, over-the-shoulder angles, seated scenes, or environment-led framing when they improve product storytelling. ";
+  enhancedPrompt +=
+    "Keep the product readable, prominent, and beautifully lit, but allow the frame to breathe with negative space, props, and surrounding context when useful. ";
+  enhancedPrompt += "\nCRITICAL: The final image must look like a top-tier magazine advertisement or a premium brand's landing page hero shot. ";
   enhancedPrompt +=
     "It should be highly attractive and induce purchase conversion. IMPORTANT: Do NOT include any text, words, letters, typography, or logos in the generated image.";
 
@@ -414,16 +463,36 @@ function buildImageStyleInstructions(options?: ImageGenOptions) {
   let instructions = "";
 
   if (options.style === "studio") {
-    instructions += "- Setting: Professional studio lighting, clean and premium studio background.\n";
+    instructions +=
+      "- Setting: Professional studio lighting, polished seamless backdrop, premium surfaces or editorial props allowed when they support the product story.\n";
+    instructions +=
+      "- Composition: Avoid a default chest-up portrait. Prefer a mix of product-centric wide frames, half-body frames, seated or standing full-figure compositions, tabletop layouts, hand interactions, and close detail inserts depending on the section goal.\n";
+    instructions +=
+      "- Art Direction: Crisp controlled light, subtle shadows, refined color balance, and a clearly designed studio set that feels intentional rather than empty.\n";
   } else if (options.style === "lifestyle") {
-    instructions += "- Setting: Authentic, aspirational lifestyle environment, natural lighting, real-world context.\n";
+    instructions +=
+      "- Setting: Authentic, aspirational lifestyle environment with natural lighting, lived-in textures, and everyday context that feels believable.\n";
+    instructions +=
+      "- Composition: Use candid moments, on-location interaction, room context, hands using the product, and gentle movement. Vary distance between environmental wide shots, medium shots, and close usage details.\n";
+    instructions +=
+      "- Art Direction: Warm, human, relatable, and editorial, with enough context to explain why the product fits into daily life.\n";
   } else if (options.style === "outdoor") {
-    instructions += "- Setting: Beautiful outdoor environment, cinematic natural lighting, scenic background.\n";
+    instructions +=
+      "- Setting: Beautiful outdoor environment with cinematic natural lighting, location depth, airiness, and scene-based storytelling.\n";
+    instructions +=
+      "- Composition: Use wide scenic frames, dynamic movement, environmental close-ups, and product-in-use storytelling that feels active and open.\n";
+    instructions +=
+      "- Art Direction: Fresh, expansive, airy, and energetic, with the location helping explain the product mood or usage context.\n";
   }
 
   if (options.withModel) {
-    const modelDescriptor = buildModelDescriptor(options);
-    instructions += `- Subject: MUST feature an attractive, professional model (${modelDescriptor}) posing with and interacting naturally with the product.\n`;
+    if (options.referenceModelImageBase64) {
+      instructions += "- Subject: MUST feature the exact same person shown in the attached reference model image.\n";
+      instructions += "- Identity Lock: Preserve the face, hairstyle, skin tone, and overall appearance of that same person while adapting pose, styling, and composition to the scene.\n";
+    } else {
+      const modelDescriptor = buildModelDescriptor(options);
+      instructions += `- Subject: MUST feature an attractive, professional model (${modelDescriptor}) posing with and interacting naturally with the product.\n`;
+    }
   } else {
     instructions += "- Subject: Do NOT include any people or models. Focus entirely on the product and background.\n";
   }
@@ -439,17 +508,21 @@ function buildImagePreferenceInstructions(options?: ImageGenOptions) {
   const parts: string[] = [];
 
   if (options.style === "studio") {
-    parts.push("Professional studio lighting.");
+    parts.push("Use a polished studio set with controlled light and flexible framing, not a fixed upper-body portrait.");
   } else if (options.style === "lifestyle") {
-    parts.push("Authentic lifestyle environment.");
+    parts.push("Use an authentic lifestyle setting with natural interaction and believable context.");
   } else if (options.style === "outdoor") {
-    parts.push("Outdoor environment.");
+    parts.push("Use an outdoor environment with scenic depth and active visual storytelling.");
   }
 
-  if (options.withModel) {
+  if (options.withModel && options.referenceModelImageBase64) {
+    parts.push("Use the attached reference model as the same person for this scene.");
+  } else if (options.withModel) {
     const modelDescriptor = buildModelDescriptor(options);
     parts.push(`If appropriate for the scene, feature a model (${modelDescriptor}).`);
   }
+
+  parts.push("Keep the product central to the story and avoid collapsing the scene into a generic portrait.");
 
   return parts.length ? `Style Preferences: ${parts.join(" ")}` : "";
 }
@@ -557,10 +630,20 @@ function normalizeSection(section: Partial<SectionBlueprint>, index: number): Se
     section_name: asString(section.section_name) || `섹션 ${index + 1}`,
     goal: asString(section.goal),
     headline: asString(section.headline),
+    headline_en: asString(section.headline_en) || asString(section.headline),
     subheadline: asString(section.subheadline),
+    subheadline_en: asString(section.subheadline_en) || asString(section.subheadline),
     bullets: Array.isArray(section.bullets) ? section.bullets.map((item) => asString(item)).filter(Boolean) : [],
+    bullets_en: Array.isArray(section.bullets_en)
+      ? section.bullets_en.map((item) => asString(item)).filter(Boolean)
+      : Array.isArray(section.bullets)
+        ? section.bullets.map((item) => asString(item)).filter(Boolean)
+        : [],
     trust_or_objection_line: asString(section.trust_or_objection_line),
+    trust_or_objection_line_en:
+      asString(section.trust_or_objection_line_en) || asString(section.trust_or_objection_line),
     CTA: asString(section.CTA),
+    CTA_en: asString(section.CTA_en) || asString(section.CTA),
     layout_notes: asString(section.layout_notes),
     compliance_notes: asString(section.compliance_notes),
     image_id: asString(section.image_id) || `IMG_S${index + 1}`,
@@ -572,6 +655,25 @@ function normalizeSection(section: Partial<SectionBlueprint>, index: number): Se
     style_guide: asString(section.style_guide),
     reference_usage: asString(section.reference_usage),
     generatedImage: section.generatedImage
+  };
+}
+
+function normalizeReferenceModelImage(base64?: string, mimeType?: string) {
+  if (!base64?.trim()) {
+    return null;
+  }
+
+  if (!mimeType?.trim()) {
+    throw new PdpServiceError(
+      "INVALID_IMAGE_PAYLOAD",
+      "모델 이미지 형식이 올바르지 않습니다.",
+      "Reference model image is missing mime type."
+    );
+  }
+
+  return {
+    base64: sanitizeBase64Payload(base64),
+    mimeType: normalizeMimeType(mimeType)
   };
 }
 

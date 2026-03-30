@@ -17,7 +17,7 @@ import {
   Upload,
   Wand2
 } from "lucide-react";
-import type { AspectRatio, GeneratedResult, PdpAnalyzeResponse } from "@runacademy/shared";
+import type { AspectRatio, GeneratedResult, PdpAnalyzeResponse, ReferenceModelUsage } from "@runacademy/shared";
 import type { PdpAppState, PdpDraftSummary, PdpEditorDraftState, PreparedImageDraft } from "./pdp-drafts";
 import { deletePdpDraft, getPdpDraft, listPdpDrafts, savePdpDraft } from "./pdp-drafts";
 import { PdpEditor } from "./PdpEditor";
@@ -47,6 +47,8 @@ const WORKFLOW_ITEMS = [
 export function PdpMakerClient() {
   const [appState, setAppState] = useState<PdpAppState>("upload");
   const [preparedImage, setPreparedImage] = useState<PreparedImage | null>(null);
+  const [modelImage, setModelImage] = useState<PreparedImage | null>(null);
+  const [modelImageUsage, setModelImageUsage] = useState<ReferenceModelUsage | null>(null);
   const [result, setResult] = useState<GeneratedResult | null>(null);
   const [additionalInfo, setAdditionalInfo] = useState("");
   const [desiredTone, setDesiredTone] = useState("");
@@ -72,7 +74,8 @@ export function PdpMakerClient() {
 
   const selectedRatio = useMemo(() => RATIO_OPTIONS.find((option) => option.value === aspectRatio) ?? RATIO_OPTIONS[2], [aspectRatio]);
   const selectedToneLabel = desiredTone || "AI 자동 추천";
-  const hasDraftContent = Boolean(preparedImage || result || additionalInfo.trim() || desiredTone.trim() || activeDraftId);
+  const hasDraftContent = Boolean(preparedImage || modelImage || result || additionalInfo.trim() || desiredTone.trim() || activeDraftId);
+  const canAnalyze = Boolean(preparedImage && (!modelImage || modelImageUsage));
 
   const refreshDrafts = useCallback(async () => {
     setIsLoadingDrafts(true);
@@ -96,7 +99,7 @@ export function PdpMakerClient() {
 
     setIsDirty(true);
     setSaveState((current) => (current === "saved" ? "idle" : current));
-  }, [additionalInfo, appState, aspectRatio, desiredTone, editorDraftState, hasDraftContent, preparedImage, result]);
+  }, [additionalInfo, appState, aspectRatio, desiredTone, editorDraftState, hasDraftContent, modelImage, modelImageUsage, preparedImage, result]);
 
   const handlePreparedImage = async (file: File) => {
     try {
@@ -117,6 +120,26 @@ export function PdpMakerClient() {
     }
   };
 
+  const handleModelImage = async (file: File) => {
+    try {
+      if (!file.type.startsWith("image/")) {
+        setErrorMessage("이미지 파일만 업로드할 수 있습니다.");
+        return;
+      }
+
+      const nextImage = await prepareImageFile(file);
+      setModelImage(nextImage);
+      setModelImageUsage(null);
+      setErrorMessage("");
+      setErrorDetail("");
+      setShowErrorDetail(false);
+      setNotice(`${file.name} 모델 이미지를 준비했습니다. 히어로우 전용 또는 전체 일관성 유지 방식을 선택해 주세요.`);
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : "모델 이미지를 준비하지 못했습니다.");
+      setErrorDetail(error instanceof Error ? `${error.name}: ${error.message}` : String(error));
+    }
+  };
+
   const buildDraftInput = useCallback(() => {
     if (!hasDraftContent) {
       return null;
@@ -127,6 +150,8 @@ export function PdpMakerClient() {
       createdAt: draftCreatedAt ?? undefined,
       appState: result ? "editor" : appState === "processing" ? "upload" : appState,
       preparedImage,
+      modelImage,
+      modelImageUsage,
       result,
       additionalInfo,
       desiredTone,
@@ -134,7 +159,7 @@ export function PdpMakerClient() {
       notice: editorDraftState?.notice ?? notice,
       editorState: result ? editorDraftState ?? createDefaultEditorDraftState(result) : null
     };
-  }, [activeDraftId, additionalInfo, appState, aspectRatio, desiredTone, draftCreatedAt, editorDraftState, hasDraftContent, notice, preparedImage, result]);
+  }, [activeDraftId, additionalInfo, appState, aspectRatio, desiredTone, draftCreatedAt, editorDraftState, hasDraftContent, modelImage, modelImageUsage, notice, preparedImage, result]);
 
   const persistDraft = useCallback(
     async (mode: "manual" | "auto" | "switch" = "manual", options?: { showToast?: boolean }) => {
@@ -195,6 +220,8 @@ export function PdpMakerClient() {
     isApplyingDraftRef.current = true;
     setAppState("upload");
     setPreparedImage(null);
+    setModelImage(null);
+    setModelImageUsage(null);
     setResult(null);
     setAdditionalInfo("");
     setDesiredTone("");
@@ -240,6 +267,8 @@ export function PdpMakerClient() {
         setDraftCreatedAt(draft.createdAt);
         setLastSavedAt(draft.updatedAt);
         setPreparedImage(draft.preparedImage);
+        setModelImage(draft.modelImage ?? null);
+        setModelImageUsage(draft.modelImageUsage ?? null);
         setResult(draft.result);
         setAdditionalInfo(draft.additionalInfo);
         setDesiredTone(draft.desiredTone);
@@ -320,6 +349,11 @@ export function PdpMakerClient() {
       return;
     }
 
+    if (modelImage && !modelImageUsage) {
+      setErrorMessage("모델 이미지를 사용할 방식을 먼저 선택해 주세요.");
+      return;
+    }
+
     setAppState("processing");
     setErrorMessage("");
     setErrorDetail("");
@@ -332,6 +366,9 @@ export function PdpMakerClient() {
         body: JSON.stringify({
           imageBase64: preparedImage.base64,
           mimeType: preparedImage.mimeType,
+          modelImageBase64: modelImage?.base64,
+          modelImageMimeType: modelImage?.mimeType,
+          modelImageFileName: modelImage?.fileName,
           additionalInfo: additionalInfo.trim() || undefined,
           desiredTone: desiredTone.trim() || undefined,
           aspectRatio
@@ -379,6 +416,8 @@ export function PdpMakerClient() {
         onDraftStateChange={setEditorDraftState}
         onManualSave={() => void persistDraft("manual", { showToast: true })}
         onReset={() => void handleReset()}
+        referenceModelImage={modelImage}
+        referenceModelUsage={modelImageUsage}
         saveState={saveState}
       />
     );
@@ -389,8 +428,7 @@ export function PdpMakerClient() {
       <section className={styles.shell}>
         <header className={styles.toolHeader}>
           <div className={styles.toolHeaderCopy}>
-            <span className={styles.toolKicker}>팀 한이룸</span>
-            <h1 className={styles.toolTitle}>상세페이지 마법사 2.0</h1>
+            <h1 className={styles.toolTitle}>한이룸의 상세페이지 마법사 2.0</h1>
             <p className={styles.toolDescription}>
               원본 제품 이미지를 올리면 AI가 상세페이지 구조와 첫 섹션 컷을 설계하고, 바로 편집 가능한 작업 상태로 넘겨줍니다.
             </p>
@@ -498,7 +536,13 @@ export function PdpMakerClient() {
                 </div>
               </div>
 
-              <UploadDropzone onSelect={handlePreparedImage} selectedFileName={preparedImage?.fileName} />
+              <UploadDropzone
+                description="드래그 앤 드롭 또는 클릭으로 JPG, PNG, WEBP 파일을 선택할 수 있습니다."
+                hint={preparedImage?.fileName ? `선택됨: ${preparedImage.fileName}` : "권장 최대 10MB"}
+                onSelect={handlePreparedImage}
+                selectedFileName={preparedImage?.fileName}
+                title="제품 이미지를 업로드하세요"
+              />
 
               {preparedImage ? (
                 <div className={styles.uploadPreviewCard}>
@@ -535,6 +579,125 @@ export function PdpMakerClient() {
                   </div>
                 </div>
               )}
+
+              <div className={styles.optionalUploadBlock}>
+                <div className={styles.optionalUploadHeader}>
+                  <div>
+                    <span className={styles.panelLabel}>선택 옵션</span>
+                    <h3 className={styles.optionalUploadTitle}>모델 이미지 업로드</h3>
+                    <p className={styles.optionalUploadDescription}>
+                      인물 이미지를 올리면 첫 히어로우에만 쓰거나, 모델컷 전체를 같은 인물로 맞출 수 있습니다.
+                    </p>
+                  </div>
+                  {modelImage ? (
+                    <button
+                      className={styles.inlineButton}
+                      onClick={() => {
+                        setModelImage(null);
+                        setModelImageUsage(null);
+                        setErrorMessage("");
+                        setErrorDetail("");
+                        setShowErrorDetail(false);
+                        setNotice("모델 이미지를 제거했습니다. 일반 페르소나 설정으로 계속 편집할 수 있습니다.");
+                      }}
+                      type="button"
+                    >
+                      <Trash2 size={14} />
+                      모델 이미지 제거
+                    </button>
+                  ) : null}
+                </div>
+
+                <UploadDropzone
+                  compact
+                  description="선택 사항입니다. 업로드한 인물 이미지는 모델컷 생성 시 참조 이미지로 사용됩니다."
+                  hint={modelImage?.fileName ? `선택됨: ${modelImage.fileName}` : "권장 최대 10MB"}
+                  onSelect={handleModelImage}
+                  selectedFileName={modelImage?.fileName}
+                  title="모델 이미지를 업로드하세요"
+                />
+
+                {modelImage ? (
+                  <div className={styles.uploadPreviewCard}>
+                    <div className={styles.previewFrame}>
+                      <img alt={modelImage.fileName} className={styles.selectedImage} src={modelImage.previewUrl} />
+                    </div>
+                    <div className={styles.uploadMeta}>
+                      <strong>{modelImage.fileName}</strong>
+                      <div className={styles.metaList}>
+                        <div className={styles.metaItem}>
+                          <span>적용 대상</span>
+                          <strong>{modelImageUsage === "all-sections" ? "전체 모델컷" : modelImageUsage === "hero-only" ? "히어로우 섹션" : "선택 필요"}</strong>
+                        </div>
+                        <div className={styles.metaItem}>
+                          <span>활용 방식</span>
+                          <strong>참조 모델</strong>
+                        </div>
+                        <div className={styles.metaItem}>
+                          <span>편집 영향</span>
+                          <strong>
+                            {modelImageUsage === "all-sections"
+                              ? "타깃 페르소나 잠금"
+                              : modelImageUsage === "hero-only"
+                                ? "히어로우만 잠금"
+                                : "선택 필요"}
+                          </strong>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                ) : (
+                  <div className={styles.emptyStatePanel}>
+                    <Sparkles size={18} />
+                    <div>
+                      <strong>없어도 상세페이지 생성은 가능합니다.</strong>
+                      <ul className={styles.emptyList}>
+                        <li>히어로우에 특정 모델컷을 고정하고 싶을 때만 업로드하세요.</li>
+                        <li>전체 일관성 유지를 고르면 모델컷 포함 시 동일 인물 기준으로 생성됩니다.</li>
+                      </ul>
+                    </div>
+                  </div>
+                )}
+
+                {modelImage ? (
+                  <div className={styles.modelUsagePanel}>
+                    <div className={styles.modelUsageHeader}>
+                      <strong>모델 이미지 사용 방식</strong>
+                      <span>이미지를 업로드했다면 아래 두 옵션 중 하나를 선택해야 분석을 시작할 수 있습니다.</span>
+                    </div>
+                    <div className={styles.modelUsageGrid}>
+                      <button
+                        className={modelImageUsage === "hero-only" ? styles.modelUsageCardActive : styles.modelUsageCard}
+                        onClick={() => {
+                          setModelImageUsage("hero-only");
+                          setErrorMessage("");
+                        }}
+                        type="button"
+                      >
+                        <strong>히어로우에만 사용</strong>
+                        <span>맨 첫 히어로우 섹션의 모델컷에만 업로드한 인물을 적용합니다.</span>
+                      </button>
+                      <button
+                        className={modelImageUsage === "all-sections" ? styles.modelUsageCardActive : styles.modelUsageCard}
+                        onClick={() => {
+                          setModelImageUsage("all-sections");
+                          setErrorMessage("");
+                        }}
+                        type="button"
+                      >
+                        <strong>전체 일관성 유지</strong>
+                        <span>모델컷 포함 시 업로드한 인물을 계속 사용하고 타깃 페르소나 설정은 비활성화됩니다.</span>
+                      </button>
+                    </div>
+                    {!modelImageUsage ? (
+                      <div className={styles.inlineWarning}>
+                        <AlertCircle size={16} />
+                        모델 이미지 사용 방식을 선택해야 AI 분석을 시작할 수 있습니다.
+                      </div>
+                    ) : null}
+                  </div>
+                ) : null}
+              </div>
 
               {errorMessage ? (
                 <div className={styles.errorPanel}>
@@ -651,13 +814,13 @@ export function PdpMakerClient() {
                 </div>
               </div>
 
-              <button className={styles.primaryButtonWide} disabled={!preparedImage} onClick={handleAnalyze} type="button">
+              <button className={styles.primaryButtonWide} disabled={!canAnalyze} onClick={handleAnalyze} type="button">
                 <Wand2 size={16} />
                 AI 분석 시작하기
               </button>
 
               <p className={styles.helperCopy}>
-                첫 분석에서는 블루프린트와 함께 첫 섹션 이미지까지 자동 생성됩니다. 이후 편집 화면에서 섹션별로 다시 만들 수 있습니다.
+                첫 분석에서는 블루프린트와 함께 첫 섹션 이미지까지 자동 생성됩니다. 모델 이미지를 올렸다면 사용 방식을 먼저 고른 뒤 시작해 주세요.
               </p>
             </aside>
           </div>
@@ -681,11 +844,19 @@ export function PdpMakerClient() {
 }
 
 function UploadDropzone({
+  compact = false,
+  description,
+  hint,
   onSelect,
-  selectedFileName
+  selectedFileName,
+  title
 }: {
+  compact?: boolean;
+  description: string;
+  hint: string;
   onSelect: (file: File) => Promise<void>;
   selectedFileName?: string;
+  title: string;
 }) {
   const inputRef = useRef<HTMLInputElement>(null);
   const [dragActive, setDragActive] = useState(false);
@@ -728,7 +899,7 @@ function UploadDropzone({
       />
 
       <button
-        className={dragActive ? styles.dropzoneActive : styles.dropzone}
+        className={`${compact ? styles.dropzoneCompact : ""} ${dragActive ? styles.dropzoneActive : styles.dropzone}`.trim()}
         onClick={() => inputRef.current?.click()}
         onDragEnter={handleDrag}
         onDragLeave={handleDrag}
@@ -739,9 +910,9 @@ function UploadDropzone({
         <div className={styles.dropzoneIcon}>
           <Upload size={24} />
         </div>
-        <strong>제품 이미지를 업로드하세요</strong>
-        <p>드래그 앤 드롭 또는 클릭으로 JPG, PNG, WEBP 파일을 선택할 수 있습니다.</p>
-        <span className={styles.dropzoneHint}>{selectedFileName ? `선택됨: ${selectedFileName}` : "권장 최대 10MB"}</span>
+        <strong>{title}</strong>
+        <p>{description}</p>
+        <span className={styles.dropzoneHint}>{selectedFileName ? `선택됨: ${selectedFileName}` : hint}</span>
       </button>
     </>
   );
@@ -769,6 +940,7 @@ function createDefaultEditorDraftState(result: GeneratedResult): PdpEditorDraftS
     sections: result.blueprint.sections.map((section) => ({ ...section })),
     sectionOptions: {},
     overlaysBySection: {},
+    defaultCopyLanguage: "ko",
     notice: "섹션 컷을 고르고 텍스트를 배치한 뒤 바로 다운로드할 수 있습니다.",
     workbenchTab: "image",
     workbenchState: {

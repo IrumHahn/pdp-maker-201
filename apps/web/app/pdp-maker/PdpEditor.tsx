@@ -22,6 +22,7 @@ import {
   Save,
   Settings2,
   Sparkles,
+  Square,
   Trash2,
   Type,
   User
@@ -31,12 +32,17 @@ import type {
   AspectRatio,
   GeneratedResult,
   ImageGenOptions,
-  PdpGenerateImageResponse
+  PdpCopyLanguage,
+  PdpGenerateImageResponse,
+  ReferenceModelUsage
 } from "@runacademy/shared";
 import type {
+  CanvasLayer,
   FloatingWorkbenchState,
   OverlayTextAlign,
   PdpEditorDraftState,
+  PreparedImageDraft,
+  ShapeLayer,
   TextOverlay,
   WorkbenchTab
 } from "./pdp-drafts";
@@ -53,12 +59,15 @@ interface PdpEditorProps {
   onReset: () => void;
   onDraftStateChange?: (draftState: PdpEditorDraftState) => void;
   onManualSave?: () => void;
+  referenceModelImage?: PreparedImageDraft | null;
+  referenceModelUsage?: ReferenceModelUsage | null;
   saveState?: "idle" | "saving" | "saved" | "error";
 }
 
 interface ImageColorRecommendations {
-  textColors: string[];
-  backgroundColors: string[];
+  photoColors: string[];
+  recommendedTextColors: string[];
+  recommendedShapeColors: string[];
   accentColor: string;
   darkColor: string;
   lightColor: string;
@@ -113,14 +122,25 @@ const ALIGN_OPTIONS: Array<{ value: OverlayTextAlign; label: string; Icon: typeo
 ];
 
 const DEFAULT_COLOR_RECOMMENDATIONS: ImageColorRecommendations = {
-  textColors: ["#ffffff", "#102532", "#f4efe6", "#4cb7aa"],
-  backgroundColors: ["#102532", "#1d3748", "#f4efe6", "#85735e"],
+  photoColors: ["#e8ddcb", "#102532", "#7a6b5a", "#d5b692"],
+  recommendedTextColors: ["#ffffff", "#102532", "#f4efe6", "#4cb7aa"],
+  recommendedShapeColors: ["#102532", "#1d3748", "#f4efe6", "#85735e"],
   accentColor: "#4cb7aa",
   darkColor: "#102532",
   lightColor: "#f4efe6"
 };
-const SNAP_THRESHOLD = 10;
-
+const BASIC_SOLID_COLORS = [
+  "#ffffff",
+  "#f4efe6",
+  "#d9d2c3",
+  "#c4b8a0",
+  "#102532",
+  "#1d3748",
+  "#4cb7aa",
+  "#cf6f52",
+  "#d8b65b",
+  "#111111"
+];
 export function PdpEditor({
   initialResult,
   aspectRatio,
@@ -131,13 +151,15 @@ export function PdpEditor({
   onReset,
   onDraftStateChange,
   onManualSave,
+  referenceModelImage = null,
+  referenceModelUsage = null,
   saveState = "idle"
 }: PdpEditorProps) {
   const [currentSectionIndex, setCurrentSectionIndex] = useState(() => initialDraftState?.currentSectionIndex ?? 0);
   const [sections, setSections] = useState(() =>
     initialDraftState?.sections?.length
-      ? initialDraftState.sections.map((section) => ({ ...section }))
-      : initialResult.blueprint.sections.map((section) => ({ ...section }))
+      ? initialDraftState.sections.map((section) => normalizeSectionCopyFields({ ...section }))
+      : initialResult.blueprint.sections.map((section) => normalizeSectionCopyFields({ ...section }))
   );
   const [isGeneratingImage, setIsGeneratingImage] = useState(false);
   const [errorMessage, setErrorMessage] = useState("");
@@ -145,15 +167,15 @@ export function PdpEditor({
     () => initialDraftState?.notice ?? "섹션 컷을 고르고 텍스트를 배치한 뒤 바로 다운로드할 수 있습니다."
   );
   const [sectionOptions, setSectionOptions] = useState<Record<number, ImageGenOptions>>(() => initialDraftState?.sectionOptions ?? {});
-  const [overlaysBySection, setOverlaysBySection] = useState<Record<number, TextOverlay[]>>(
+  const [overlaysBySection, setOverlaysBySection] = useState<Record<number, CanvasLayer[]>>(
     () => normalizeOverlayRecord(initialDraftState?.overlaysBySection ?? {})
+  );
+  const [defaultCopyLanguage, setDefaultCopyLanguage] = useState<PdpCopyLanguage>(
+    () => initialDraftState?.defaultCopyLanguage ?? "ko"
   );
   const [selectedOverlayId, setSelectedOverlayId] = useState<string | null>(null);
   const [editingOverlayId, setEditingOverlayId] = useState<string | null>(null);
-  const [snapGuides, setSnapGuides] = useState<{ vertical: number | null; horizontal: number | null }>({
-    vertical: null,
-    horizontal: null
-  });
+  const [activeColorPalette, setActiveColorPalette] = useState<null | { layerId: string; role: "text" | "shape" | "shadow" }>(null);
   const [colorRecommendations, setColorRecommendations] = useState<ImageColorRecommendations>(DEFAULT_COLOR_RECOMMENDATIONS);
   const [inspectorSections, setInspectorSections] = useState({
     shotMood: true,
@@ -176,8 +198,12 @@ export function PdpEditor({
   const resizeSessionRef = useRef<Record<string, { width: number; height: number; fontSize: number }>>({});
 
   const currentSection = sections[currentSectionIndex];
-  const currentOverlays = overlaysBySection[currentSectionIndex] ?? [];
-  const selectedOverlay = currentOverlays.find((overlay) => overlay.id === selectedOverlayId) ?? null;
+  const currentLayers = overlaysBySection[currentSectionIndex] ?? [];
+  const currentTextLayers = currentLayers.filter(isTextLayer);
+  const currentShapeLayers = currentLayers.filter(isShapeLayer);
+  const selectedLayer = currentLayers.find((overlay) => overlay.id === selectedOverlayId) ?? null;
+  const selectedTextLayer = selectedLayer && isTextLayer(selectedLayer) ? selectedLayer : null;
+  const selectedShapeLayer = selectedLayer && isShapeLayer(selectedLayer) ? selectedLayer : null;
   const generatedCount = sections.filter((section) => Boolean(section.generatedImage)).length;
   const blueprintList = initialResult.blueprint.blueprintList.filter(Boolean);
   const toneLabel = desiredTone || "AI 자동 추천";
@@ -186,12 +212,12 @@ export function PdpEditor({
   useEffect(() => {
     setSelectedOverlayId(null);
     setEditingOverlayId(null);
+    setActiveColorPalette(null);
     setErrorMessage("");
-    setSnapGuides({ vertical: null, horizontal: null });
   }, [currentSectionIndex]);
 
   useEffect(() => {
-    if (!selectedOverlay) {
+    if (!selectedLayer) {
       return;
     }
 
@@ -199,7 +225,7 @@ export function PdpEditor({
       ...current,
       isOpen: true
     }));
-  }, [currentSectionIndex, selectedOverlayId]);
+  }, [currentSectionIndex, selectedLayer]);
 
   useEffect(() => {
     if (!previewStageRef.current) {
@@ -215,11 +241,12 @@ export function PdpEditor({
       sections,
       sectionOptions,
       overlaysBySection,
+      defaultCopyLanguage,
       notice,
       workbenchTab,
       workbenchState
     });
-  }, [currentSectionIndex, notice, onDraftStateChange, overlaysBySection, sectionOptions, sections, workbenchState, workbenchTab]);
+  }, [currentSectionIndex, defaultCopyLanguage, notice, onDraftStateChange, overlaysBySection, sectionOptions, sections, workbenchState, workbenchTab]);
 
   useEffect(() => {
     let isCancelled = false;
@@ -254,13 +281,14 @@ export function PdpEditor({
   }, [manualSaveToastToken]);
 
   const textColorRecommendations = useMemo(
-    () => sortColorsByContrast(colorRecommendations.textColors, selectedOverlay?.backgroundEnabled ? selectedOverlay.backgroundColor : null),
-    [colorRecommendations.textColors, selectedOverlay?.backgroundColor, selectedOverlay?.backgroundEnabled]
+    () => sortColorsByContrast(colorRecommendations.recommendedTextColors, selectedTextLayer?.color ?? null),
+    [colorRecommendations.recommendedTextColors, selectedTextLayer?.color]
   );
-  const backgroundColorRecommendations = useMemo(
-    () => sortColorsByContrast(colorRecommendations.backgroundColors, selectedOverlay?.color ?? null),
-    [colorRecommendations.backgroundColors, selectedOverlay?.color]
+  const shapeColorRecommendations = useMemo(
+    () => sortColorsByContrast(colorRecommendations.recommendedShapeColors, selectedShapeLayer?.fillColor ?? null),
+    [colorRecommendations.recommendedShapeColors, selectedShapeLayer?.fillColor]
   );
+  const photoColorRecommendations = useMemo(() => uniqueColors(colorRecommendations.photoColors), [colorRecommendations.photoColors]);
 
   const currentOptions = useMemo(() => {
     return (
@@ -273,6 +301,17 @@ export function PdpEditor({
       }
     );
   }, [currentSectionIndex, sectionOptions]);
+  const referenceModelAppliesToCurrentSection = Boolean(
+    referenceModelImage &&
+      referenceModelUsage &&
+      (referenceModelUsage === "all-sections" || currentSectionIndex === 0)
+  );
+  const usesReferenceModel = Boolean(currentOptions.withModel && referenceModelAppliesToCurrentSection);
+  const personaLockedMessage = usesReferenceModel
+    ? referenceModelUsage === "all-sections"
+      ? "모델 일관성 유지 선택으로 타깃 페르소나가 비활성화되었습니다."
+      : "히어로우 전용 업로드 모델이 적용되어 타깃 페르소나가 비활성화되었습니다."
+    : "";
 
   if (!currentSection) {
     return (
@@ -294,8 +333,58 @@ export function PdpEditor({
     }));
   };
 
+  const updateTextOverlayContent = (overlayId: string, nextText: string) => {
+    setOverlaysBySection((current) => ({
+      ...current,
+      [currentSectionIndex]: (current[currentSectionIndex] ?? []).map((overlay) => {
+        if (overlay.id !== overlayId || !isTextLayer(overlay)) {
+          return overlay;
+        }
+
+        return normalizeTextOverlay({
+          ...overlay,
+          text: nextText,
+          translations: {
+            ...overlay.translations,
+            [overlay.language]: nextText
+          }
+        });
+      })
+    }));
+  };
+
+  const handleOverlayLanguageChange = (overlay: TextOverlay, nextLanguage: PdpCopyLanguage) => {
+    if (overlay.language === nextLanguage) {
+      return;
+    }
+
+    setDefaultCopyLanguage(nextLanguage);
+    updateOverlay(overlay.id, applyLanguageToTextOverlay(overlay, nextLanguage));
+  };
+
+  const handleTextAlignChange = (overlay: TextOverlay, nextAlign: OverlayTextAlign) => {
+    const currentWidth = toNumericSize(overlay.width, 320);
+    const recommendedWidth = clampValue(Math.round(overlay.fontSize * 10), 220, 520);
+    const nextWidth = Math.max(currentWidth, recommendedWidth);
+
+    updateOverlay(overlay.id, {
+      textAlign: nextAlign,
+      width: nextWidth
+    });
+
+    if (nextWidth > currentWidth) {
+      setNotice("줄맞춤이 잘 보이도록 텍스트 박스 폭도 함께 넓혔습니다.");
+    }
+  };
+
   const stopShellClick = (event: ReactMouseEvent<HTMLElement>) => {
     event.stopPropagation();
+  };
+
+  const clearLayerSelection = () => {
+    setSelectedOverlayId(null);
+    setEditingOverlayId(null);
+    setActiveColorPalette(null);
   };
 
   const toggleInspectorSection = (key: keyof typeof inspectorSections) => {
@@ -327,15 +416,135 @@ export function PdpEditor({
   };
 
   const snapWorkbenchToOverlay = () => {
-    if (!selectedOverlay) {
+    if (!selectedLayer) {
       return;
     }
 
     setWorkbenchState((current) => ({
       ...current,
-      ...anchorWorkbenchToOverlay(selectedOverlay, imageContainerRef.current, previewStageRef.current, current),
+      ...anchorWorkbenchToOverlay(selectedLayer, imageContainerRef.current, previewStageRef.current, current),
       isOpen: true
     }));
+  };
+
+  const renderColorPaletteField = ({
+    label,
+    layerId,
+    role,
+    currentColor,
+    recommendedColors,
+    onSelect
+  }: {
+    label: string;
+    layerId: string;
+    role: "text" | "shape" | "shadow";
+    currentColor: string;
+    recommendedColors: string[];
+    onSelect: (color: string) => void;
+  }) => {
+    const isOpen = activeColorPalette?.layerId === layerId && activeColorPalette.role === role;
+
+    return (
+      <label className={styles.floatingField}>
+        <span className={styles.optionMiniLabel}>{label}</span>
+        <div className={styles.colorFieldStack}>
+          <button
+            className={styles.colorTriggerButton}
+            onClick={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              setActiveColorPalette((current) =>
+                current?.layerId === layerId && current.role === role ? null : { layerId, role }
+              );
+            }}
+            style={{ ["--swatch-color" as string]: currentColor }}
+            type="button"
+          >
+            <span className={styles.colorTriggerPreview} />
+            <code>{currentColor}</code>
+          </button>
+
+          {isOpen ? (
+            <div className={styles.colorPopover}>
+              <div className={styles.paletteSection}>
+                <span className={styles.optionMiniLabel}>사진 색상</span>
+                <div className={styles.swatchGridWide}>
+                  {photoColorRecommendations.map((color) => (
+                    <button
+                      className={styles.swatchButton}
+                      key={`${role}-photo-${color}`}
+                      onClick={() => {
+                        onSelect(color);
+                        setActiveColorPalette(null);
+                      }}
+                      style={{ ["--swatch-color" as string]: color }}
+                      type="button"
+                    >
+                      <span className={styles.swatchPreview} />
+                      <code>{color}</code>
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div className={styles.paletteSection}>
+                <span className={styles.optionMiniLabel}>기본 단색</span>
+                <div className={styles.swatchGridWide}>
+                  {BASIC_SOLID_COLORS.map((color) => (
+                    <button
+                      className={styles.swatchButton}
+                      key={`${role}-basic-${color}`}
+                      onClick={() => {
+                        onSelect(color);
+                        setActiveColorPalette(null);
+                      }}
+                      style={{ ["--swatch-color" as string]: color }}
+                      type="button"
+                    >
+                      <span className={styles.swatchPreview} />
+                      <code>{color}</code>
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div className={styles.paletteSection}>
+                <span className={styles.optionMiniLabel}>어울리는 컬러 추천</span>
+                <div className={styles.swatchGridWide}>
+                  {recommendedColors.map((color) => (
+                    <button
+                      className={styles.swatchButton}
+                      key={`${role}-recommended-${color}`}
+                      onClick={() => {
+                        onSelect(color);
+                        setActiveColorPalette(null);
+                      }}
+                      style={{ ["--swatch-color" as string]: color }}
+                      type="button"
+                    >
+                      <span className={styles.swatchPreview} />
+                      <code>{color}</code>
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div className={styles.colorInputRow}>
+                <input
+                  className={styles.colorInputLarge}
+                  onChange={(event) => onSelect(event.target.value)}
+                  type="color"
+                  value={currentColor}
+                />
+                <button className={styles.inlineButton} onClick={() => setActiveColorPalette(null)} type="button">
+                  닫기
+                </button>
+              </div>
+            </div>
+          ) : null}
+        </div>
+      </label>
+    );
   };
 
   const renderWorkbenchBody = () => {
@@ -399,7 +608,11 @@ export function PdpEditor({
                   <label className={styles.toggleCard}>
                     <div className={styles.toggleCardCopy}>
                       <strong>모델컷 포함</strong>
-                      <span>제품과 함께 연출되는 인물컷이 필요한 경우 켜 두세요.</span>
+                      <span>
+                        {referenceModelImage
+                          ? "제품과 함께 연출되는 인물컷이 필요하면 켜 두세요. 업로드 모델이 적용되는 구간에서는 동일 인물이 유지됩니다."
+                          : "제품과 함께 연출되는 인물컷이 필요한 경우 켜 두세요."}
+                      </span>
                     </div>
                     <input
                       checked={currentOptions.withModel}
@@ -410,12 +623,23 @@ export function PdpEditor({
 
                   {currentOptions.withModel ? (
                     <div className={styles.optionStack}>
+                      {usesReferenceModel ? (
+                        <div className={styles.lockedHint}>
+                          <AlertCircle size={15} />
+                          <div>
+                            <strong>{referenceModelUsage === "all-sections" ? "전체 일관성 유지 적용 중" : "히어로우 업로드 모델 적용 중"}</strong>
+                            <span>{personaLockedMessage}</span>
+                          </div>
+                        </div>
+                      ) : null}
+
                       <div className={styles.optionFieldBlock}>
                         <span className={styles.optionMiniLabel}>성별</span>
                         <div className={styles.segmentedRow}>
                           {MODEL_GENDER_OPTIONS.map((option) => (
                             <button
                               className={currentOptions.modelGender === option.value ? styles.segmentedButtonActive : styles.segmentedButton}
+                              disabled={usesReferenceModel}
                               key={option.value}
                               onClick={() => setCurrentOptions({ modelGender: option.value })}
                               type="button"
@@ -432,6 +656,7 @@ export function PdpEditor({
                           {MODEL_AGE_OPTIONS.map((option) => (
                             <button
                               className={currentOptions.modelAgeRange === option.value ? styles.segmentedButtonActive : styles.segmentedButton}
+                              disabled={usesReferenceModel}
                               key={option.value}
                               onClick={() => setCurrentOptions({ modelAgeRange: option.value })}
                               type="button"
@@ -451,6 +676,7 @@ export function PdpEditor({
                           {MODEL_COUNTRY_OPTIONS.map((option) => (
                             <button
                               className={currentOptions.modelCountry === option.value ? styles.countryCardActive : styles.countryCard}
+                              disabled={usesReferenceModel}
                               key={option.value}
                               onClick={() => setCurrentOptions({ modelCountry: option.value })}
                               type="button"
@@ -473,27 +699,42 @@ export function PdpEditor({
               {currentSection.generatedImage ? "이미지 다시 만들기" : "이미지 생성하기"}
             </button>
 
-            <p className={styles.inspectorHelper}>섹션 헤드라인과 지금 선택한 모델 조건을 반영해 현재 컷만 다시 생성합니다.</p>
+            <p className={styles.inspectorHelper}>
+              {usesReferenceModel
+                ? "업로드한 모델 이미지를 참조하면서 현재 섹션 컷만 다시 생성합니다."
+                : "섹션 헤드라인과 지금 선택한 모델 조건을 반영해 현재 컷만 다시 생성합니다."}
+            </p>
           </div>
         );
       case "layer":
-        return selectedOverlay ? (
-          <div className={styles.workbenchSectionStack}>
-            <div className={styles.toolbarRow}>
-              <p className={styles.floatingHint}>드래그하면 다른 텍스트의 왼쪽, 가운데, 오른쪽 선에 자석처럼 맞춰집니다.</p>
-              <button className={styles.inlineDangerButton} onClick={() => deleteOverlay(selectedOverlay.id)} type="button">
-                <Trash2 size={14} />
-                삭제
-              </button>
-            </div>
+        return selectedTextLayer ? (
+            <div className={styles.workbenchSectionStack}>
+              <div className={styles.toolbarRow}>
+                <button className={styles.inlineDangerButton} onClick={() => deleteOverlay(selectedTextLayer.id)} type="button">
+                  <Trash2 size={14} />
+                  삭제
+                </button>
+              </div>
 
             <label className={styles.floatingField}>
-              <span className={styles.optionMiniLabel}>텍스트 내용</span>
+              <div className={styles.fieldHeaderInline}>
+                <span className={styles.optionMiniLabel}>텍스트 내용</span>
+                <div className={styles.languageControlRow}>
+                  <select
+                    className={styles.miniSelect}
+                    onChange={(event) => handleOverlayLanguageChange(selectedTextLayer, event.target.value as PdpCopyLanguage)}
+                    value={selectedTextLayer.language}
+                  >
+                    <option value="ko">한국어</option>
+                    <option value="en">영어</option>
+                  </select>
+                </div>
+              </div>
               <textarea
                 className={styles.floatingTextarea}
-                onChange={(event) => updateOverlay(selectedOverlay.id, { text: event.target.value })}
+                onChange={(event) => updateTextOverlayContent(selectedTextLayer.id, event.target.value)}
                 rows={3}
-                value={selectedOverlay.text}
+                value={selectedTextLayer.text}
               />
             </label>
 
@@ -502,8 +743,8 @@ export function PdpEditor({
                 <span className={styles.optionMiniLabel}>폰트</span>
                 <select
                   className={styles.select}
-                  onChange={(event) => updateOverlay(selectedOverlay.id, { fontFamily: event.target.value })}
-                  value={selectedOverlay.fontFamily}
+                  onChange={(event) => updateOverlay(selectedTextLayer.id, { fontFamily: event.target.value })}
+                  value={selectedTextLayer.fontFamily}
                 >
                   {FONT_OPTIONS.map((option) => (
                     <option key={option.label} value={option.value}>
@@ -517,12 +758,12 @@ export function PdpEditor({
                 <span className={styles.optionMiniLabel}>굵기</span>
                 <select
                   className={styles.select}
-                  onChange={(event) => updateOverlay(selectedOverlay.id, { fontWeight: event.target.value })}
-                    value={selectedOverlay.fontWeight}
-                  >
-                    {FONT_WEIGHT_OPTIONS.map((option) => (
-                      <option key={option.value} value={option.value}>
-                        {option.label}
+                  onChange={(event) => updateOverlay(selectedTextLayer.id, { fontWeight: event.target.value })}
+                  value={selectedTextLayer.fontWeight}
+                >
+                  {FONT_WEIGHT_OPTIONS.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
                     </option>
                   ))}
                 </select>
@@ -536,12 +777,12 @@ export function PdpEditor({
                   className={styles.input}
                   min={80}
                   onChange={(event) =>
-                    updateOverlay(selectedOverlay.id, {
+                    updateOverlay(selectedTextLayer.id, {
                       width: clampValue(Number(event.target.value) || 320, 80, 1200)
                     })
                   }
                   type="number"
-                  value={toNumericSize(selectedOverlay.width, 320)}
+                  value={toNumericSize(selectedTextLayer.width, 320)}
                 />
               </label>
 
@@ -552,16 +793,16 @@ export function PdpEditor({
                     className={styles.rangeInput}
                     max={180}
                     min={10}
-                    onChange={(event) => updateOverlay(selectedOverlay.id, { fontSize: Number(event.target.value) || 16 })}
+                    onChange={(event) => updateOverlay(selectedTextLayer.id, { fontSize: Number(event.target.value) || 16 })}
                     type="range"
-                    value={selectedOverlay.fontSize}
+                    value={selectedTextLayer.fontSize}
                   />
                   <input
                     className={styles.input}
                     min={10}
-                    onChange={(event) => updateOverlay(selectedOverlay.id, { fontSize: Number(event.target.value) || 16 })}
+                    onChange={(event) => updateOverlay(selectedTextLayer.id, { fontSize: Number(event.target.value) || 16 })}
                     type="number"
-                    value={selectedOverlay.fontSize}
+                    value={selectedTextLayer.fontSize}
                   />
                 </div>
               </label>
@@ -573,19 +814,19 @@ export function PdpEditor({
                     className={styles.rangeInput}
                     max={3}
                     min={0.8}
-                    onChange={(event) => updateOverlay(selectedOverlay.id, { lineHeight: Number(event.target.value) || 1.2 })}
+                    onChange={(event) => updateOverlay(selectedTextLayer.id, { lineHeight: Number(event.target.value) || 1.2 })}
                     step={0.1}
                     type="range"
-                    value={selectedOverlay.lineHeight}
+                    value={selectedTextLayer.lineHeight}
                   />
                   <input
                     className={styles.input}
                     max={3}
                     min={0.8}
-                    onChange={(event) => updateOverlay(selectedOverlay.id, { lineHeight: Number(event.target.value) || 1.2 })}
+                    onChange={(event) => updateOverlay(selectedTextLayer.id, { lineHeight: Number(event.target.value) || 1.2 })}
                     step={0.1}
                     type="number"
-                    value={selectedOverlay.lineHeight}
+                    value={selectedTextLayer.lineHeight}
                   />
                 </div>
               </label>
@@ -594,144 +835,19 @@ export function PdpEditor({
             <div className={styles.optionSurface}>
               <div className={styles.optionSectionHeader}>
                 <div>
-                  <span className={styles.optionSectionEyebrow}>Text color</span>
-                  <strong>글자색과 추천 팔레트</strong>
+                  <span className={styles.optionSectionEyebrow}>Color palette</span>
+                  <strong>글자색</strong>
                 </div>
                 <Palette size={16} />
               </div>
-              <label className={styles.floatingField}>
-                <span className={styles.optionMiniLabel}>글자색</span>
-                <div className={styles.colorControlRow}>
-                  <input
-                    className={styles.colorInputLarge}
-                    onChange={(event) => updateOverlay(selectedOverlay.id, { color: event.target.value })}
-                    type="color"
-                    value={selectedOverlay.color}
-                  />
-                  <code>{selectedOverlay.color}</code>
-                </div>
-              </label>
-              <div className={styles.recommendationGroup}>
-                <span className={styles.optionMiniLabel}>이미지 추천</span>
-                <div className={styles.swatchGrid}>
-                  {textColorRecommendations.map((color) => (
-                    <button
-                      className={styles.swatchButton}
-                      key={`text-${color}`}
-                      onClick={() => updateOverlay(selectedOverlay.id, { color })}
-                      style={{ ["--swatch-color" as string]: color }}
-                      type="button"
-                    >
-                      <span className={styles.swatchPreview} />
-                      <code>{color}</code>
-                    </button>
-                  ))}
-                </div>
-              </div>
-            </div>
-
-            <div className={styles.optionSurface}>
-              <div className={styles.optionSectionHeader}>
-                <div>
-                  <span className={styles.optionSectionEyebrow}>Background box</span>
-                  <strong>텍스트 뒤 배경 박스</strong>
-                </div>
-                <Palette size={16} />
-              </div>
-              <label className={styles.toggleCard}>
-                <div className={styles.toggleCardCopy}>
-                  <strong>배경 박스 표시</strong>
-                  <span>텍스트는 위에 두고, 이미지 위에는 부드러운 사각형 배경만 깔아줍니다.</span>
-                </div>
-                <input
-                  checked={selectedOverlay.backgroundEnabled}
-                  onChange={(event) => updateOverlay(selectedOverlay.id, { backgroundEnabled: event.target.checked })}
-                  type="checkbox"
-                />
-              </label>
-
-              {selectedOverlay.backgroundEnabled ? (
-                <>
-                  <label className={styles.floatingField}>
-                    <span className={styles.optionMiniLabel}>배경색</span>
-                    <div className={styles.colorControlRow}>
-                      <input
-                        className={styles.colorInputLarge}
-                        onChange={(event) => updateOverlay(selectedOverlay.id, { backgroundColor: event.target.value })}
-                        type="color"
-                        value={selectedOverlay.backgroundColor}
-                      />
-                      <code>{selectedOverlay.backgroundColor}</code>
-                    </div>
-                  </label>
-                  <div className={styles.recommendationGroup}>
-                    <span className={styles.optionMiniLabel}>이미지 추천</span>
-                    <div className={styles.swatchGrid}>
-                      {backgroundColorRecommendations.map((color) => (
-                        <button
-                          className={styles.swatchButton}
-                          key={`background-${color}`}
-                          onClick={() => updateOverlay(selectedOverlay.id, { backgroundColor: color })}
-                          style={{ ["--swatch-color" as string]: color }}
-                          type="button"
-                        >
-                          <span className={styles.swatchPreview} />
-                          <code>{color}</code>
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                  <div className={styles.floatingCompactGrid}>
-                    <label className={styles.floatingField}>
-                      <span className={styles.optionMiniLabel}>투명도</span>
-                      <div className={styles.rangeField}>
-                        <input
-                          className={styles.rangeInput}
-                          max={1}
-                          min={0.1}
-                          onChange={(event) => updateOverlay(selectedOverlay.id, { backgroundOpacity: Number(event.target.value) || 0.72 })}
-                          step={0.05}
-                          type="range"
-                          value={selectedOverlay.backgroundOpacity}
-                        />
-                        <input
-                          className={styles.input}
-                          max={1}
-                          min={0.1}
-                          onChange={(event) => updateOverlay(selectedOverlay.id, { backgroundOpacity: Number(event.target.value) || 0.72 })}
-                          step={0.05}
-                          type="number"
-                          value={selectedOverlay.backgroundOpacity}
-                        />
-                      </div>
-                    </label>
-
-                    <label className={styles.floatingField}>
-                      <span className={styles.optionMiniLabel}>모서리</span>
-                      <div className={styles.rangeField}>
-                        <input
-                          className={styles.rangeInput}
-                          max={40}
-                          min={0}
-                          onChange={(event) => updateOverlay(selectedOverlay.id, { backgroundRadius: Number(event.target.value) || 0 })}
-                          step={1}
-                          type="range"
-                          value={selectedOverlay.backgroundRadius}
-                        />
-                        <input
-                          className={styles.input}
-                          max={40}
-                          min={0}
-                          onChange={(event) => updateOverlay(selectedOverlay.id, { backgroundRadius: Number(event.target.value) || 0 })}
-                          step={1}
-                          type="number"
-                          value={selectedOverlay.backgroundRadius}
-                        />
-                      </div>
-                    </label>
-                  </div>
-                </>
-              ) : null}
+              {renderColorPaletteField({
+                label: "글자색",
+                layerId: selectedTextLayer.id,
+                role: "text",
+                currentColor: selectedTextLayer.color,
+                recommendedColors: textColorRecommendations,
+                onSelect: (color) => updateOverlay(selectedTextLayer.id, { color })
+              })}
             </div>
 
             <div className={styles.optionSurface}>
@@ -745,99 +861,45 @@ export function PdpEditor({
               <label className={styles.toggleCard}>
                 <div className={styles.toggleCardCopy}>
                   <strong>그림자 사용</strong>
-                  <span>밝은 이미지 위에서도 텍스트가 또렷하게 읽히도록 부드러운 깊이를 더합니다.</span>
+                  <span>밝은 이미지 위에서도 텍스트가 묻히지 않도록 깊이를 더합니다.</span>
                 </div>
                 <input
-                  checked={selectedOverlay.shadowEnabled}
-                  onChange={(event) => updateOverlay(selectedOverlay.id, { shadowEnabled: event.target.checked })}
+                  checked={selectedTextLayer.shadowEnabled}
+                  onChange={(event) => updateOverlay(selectedTextLayer.id, { shadowEnabled: event.target.checked })}
                   type="checkbox"
                 />
               </label>
 
-              {selectedOverlay.shadowEnabled ? (
+              {selectedTextLayer.shadowEnabled ? (
                 <>
-                  <label className={styles.floatingField}>
-                    <span className={styles.optionMiniLabel}>그림자색</span>
-                    <div className={styles.colorControlRow}>
-                      <input
-                        className={styles.colorInputLarge}
-                        onChange={(event) => updateOverlay(selectedOverlay.id, { shadowColor: event.target.value })}
-                        type="color"
-                        value={selectedOverlay.shadowColor}
-                      />
-                      <code>{selectedOverlay.shadowColor}</code>
-                    </div>
-                  </label>
+                  {renderColorPaletteField({
+                    label: "그림자색",
+                    layerId: selectedTextLayer.id,
+                    role: "shadow",
+                    currentColor: selectedTextLayer.shadowColor,
+                    recommendedColors: [colorRecommendations.darkColor, "#000000", colorRecommendations.accentColor],
+                    onSelect: (color) => updateOverlay(selectedTextLayer.id, { shadowColor: color })
+                  })}
                   <div className={styles.floatingCompactGrid}>
                     <label className={styles.floatingField}>
                       <span className={styles.optionMiniLabel}>강도</span>
                       <div className={styles.rangeField}>
-                        <input
-                          className={styles.rangeInput}
-                          max={1}
-                          min={0}
-                          onChange={(event) => updateOverlay(selectedOverlay.id, { shadowOpacity: Number(event.target.value) || 0 })}
-                          step={0.05}
-                          type="range"
-                          value={selectedOverlay.shadowOpacity}
-                        />
-                        <input
-                          className={styles.input}
-                          max={1}
-                          min={0}
-                          onChange={(event) => updateOverlay(selectedOverlay.id, { shadowOpacity: Number(event.target.value) || 0 })}
-                          step={0.05}
-                          type="number"
-                          value={selectedOverlay.shadowOpacity}
-                        />
+                        <input className={styles.rangeInput} max={1} min={0} step={0.05} type="range" value={selectedTextLayer.shadowOpacity} onChange={(event) => updateOverlay(selectedTextLayer.id, { shadowOpacity: Number(event.target.value) || 0 })} />
+                        <input className={styles.input} max={1} min={0} step={0.05} type="number" value={selectedTextLayer.shadowOpacity} onChange={(event) => updateOverlay(selectedTextLayer.id, { shadowOpacity: Number(event.target.value) || 0 })} />
                       </div>
                     </label>
-
                     <label className={styles.floatingField}>
                       <span className={styles.optionMiniLabel}>흐림</span>
                       <div className={styles.rangeField}>
-                        <input
-                          className={styles.rangeInput}
-                          max={40}
-                          min={0}
-                          onChange={(event) => updateOverlay(selectedOverlay.id, { shadowBlur: Number(event.target.value) || 0 })}
-                          step={1}
-                          type="range"
-                          value={selectedOverlay.shadowBlur}
-                        />
-                        <input
-                          className={styles.input}
-                          max={40}
-                          min={0}
-                          onChange={(event) => updateOverlay(selectedOverlay.id, { shadowBlur: Number(event.target.value) || 0 })}
-                          step={1}
-                          type="number"
-                          value={selectedOverlay.shadowBlur}
-                        />
+                        <input className={styles.rangeInput} max={40} min={0} step={1} type="range" value={selectedTextLayer.shadowBlur} onChange={(event) => updateOverlay(selectedTextLayer.id, { shadowBlur: Number(event.target.value) || 0 })} />
+                        <input className={styles.input} max={40} min={0} step={1} type="number" value={selectedTextLayer.shadowBlur} onChange={(event) => updateOverlay(selectedTextLayer.id, { shadowBlur: Number(event.target.value) || 0 })} />
                       </div>
                     </label>
-
                     <label className={styles.floatingField}>
                       <span className={styles.optionMiniLabel}>거리</span>
                       <div className={styles.rangeField}>
-                        <input
-                          className={styles.rangeInput}
-                          max={24}
-                          min={-24}
-                          onChange={(event) => updateOverlay(selectedOverlay.id, { shadowOffsetY: Number(event.target.value) || 0 })}
-                          step={1}
-                          type="range"
-                          value={selectedOverlay.shadowOffsetY}
-                        />
-                        <input
-                          className={styles.input}
-                          max={24}
-                          min={-24}
-                          onChange={(event) => updateOverlay(selectedOverlay.id, { shadowOffsetY: Number(event.target.value) || 0 })}
-                          step={1}
-                          type="number"
-                          value={selectedOverlay.shadowOffsetY}
-                        />
+                        <input className={styles.rangeInput} max={24} min={-24} step={1} type="range" value={selectedTextLayer.shadowOffsetY} onChange={(event) => updateOverlay(selectedTextLayer.id, { shadowOffsetY: Number(event.target.value) || 0 })} />
+                        <input className={styles.input} max={24} min={-24} step={1} type="number" value={selectedTextLayer.shadowOffsetY} onChange={(event) => updateOverlay(selectedTextLayer.id, { shadowOffsetY: Number(event.target.value) || 0 })} />
                       </div>
                     </label>
                   </div>
@@ -850,9 +912,9 @@ export function PdpEditor({
               <div className={styles.alignButtonGroup}>
                 {ALIGN_OPTIONS.map(({ value, label, Icon }) => (
                   <button
-                    className={selectedOverlay.textAlign === value ? styles.alignButtonActive : styles.alignButton}
+                    className={selectedTextLayer.textAlign === value ? styles.alignButtonActive : styles.alignButton}
                     key={value}
-                    onClick={() => updateOverlay(selectedOverlay.id, { textAlign: value })}
+                    onClick={() => handleTextAlignChange(selectedTextLayer, value)}
                     type="button"
                   >
                     <Icon size={15} />
@@ -862,12 +924,63 @@ export function PdpEditor({
               </div>
             </div>
           </div>
+        ) : selectedShapeLayer ? (
+          <div className={styles.workbenchSectionStack}>
+            <div className={styles.toolbarRow}>
+              <p className={styles.floatingHint}>사각형은 이미지 위, 텍스트 아래에 깔리는 독립 배경 오브젝트입니다.</p>
+              <button className={styles.inlineDangerButton} onClick={() => deleteOverlay(selectedShapeLayer.id)} type="button">
+                <Trash2 size={14} />
+                삭제
+              </button>
+            </div>
+
+            <div className={styles.optionSurface}>
+              <div className={styles.optionSectionHeader}>
+                <div>
+                  <span className={styles.optionSectionEyebrow}>Shape fill</span>
+                  <strong>배경 사각형 색상</strong>
+                </div>
+                <Palette size={16} />
+              </div>
+              {renderColorPaletteField({
+                label: "채우기 색상",
+                layerId: selectedShapeLayer.id,
+                role: "shape",
+                currentColor: selectedShapeLayer.fillColor,
+                recommendedColors: shapeColorRecommendations,
+                onSelect: (color) => updateOverlay(selectedShapeLayer.id, { fillColor: color })
+              })}
+            </div>
+
+            <div className={styles.floatingCompactGrid}>
+              <label className={styles.floatingField}>
+                <span className={styles.optionMiniLabel}>투명도</span>
+                <div className={styles.rangeField}>
+                  <input className={styles.rangeInput} max={1} min={0.05} step={0.05} type="range" value={selectedShapeLayer.fillOpacity} onChange={(event) => updateOverlay(selectedShapeLayer.id, { fillOpacity: Number(event.target.value) || 0.5 })} />
+                  <input className={styles.input} max={1} min={0.05} step={0.05} type="number" value={selectedShapeLayer.fillOpacity} onChange={(event) => updateOverlay(selectedShapeLayer.id, { fillOpacity: Number(event.target.value) || 0.5 })} />
+                </div>
+              </label>
+              <label className={styles.floatingField}>
+                <span className={styles.optionMiniLabel}>모서리</span>
+                <div className={styles.rangeField}>
+                  <input className={styles.rangeInput} max={48} min={0} step={1} type="range" value={selectedShapeLayer.borderRadius} onChange={(event) => updateOverlay(selectedShapeLayer.id, { borderRadius: Number(event.target.value) || 0 })} />
+                  <input className={styles.input} max={48} min={0} step={1} type="number" value={selectedShapeLayer.borderRadius} onChange={(event) => updateOverlay(selectedShapeLayer.id, { borderRadius: Number(event.target.value) || 0 })} />
+                </div>
+              </label>
+            </div>
+          </div>
         ) : (
           <div className={styles.inspectorEmpty}>
             <Type size={18} />
             <div>
-              <strong>텍스트를 선택해 주세요</strong>
-              <p>캔버스의 문구를 클릭하면 이 패널에서 바로 편집할 수 있습니다.</p>
+              <strong>텍스트나 사각형을 선택해 주세요</strong>
+              <p>캔버스의 텍스트나 배경 사각형을 클릭하면 이 패널에서 바로 편집할 수 있습니다.</p>
+              <div className={styles.inspectorEmptyActions}>
+                <button className={styles.copyUtilityButton} onClick={handleAddShapeLayer} type="button">
+                  <Square size={15} />
+                  배경 사각형 추가
+                </button>
+              </div>
             </div>
           </div>
         );
@@ -875,16 +988,48 @@ export function PdpEditor({
         return (
           <div className={styles.copyLibrary}>
             <div className={styles.copySection}>
+              <p className={styles.cardLabel}>Layout Object</p>
+              <button className={styles.copyUtilityButton} onClick={handleAddShapeLayer} type="button">
+                <Palette size={15} />
+                배경 사각형 추가
+              </button>
+            </div>
+
+            <div className={styles.copySection}>
               <p className={styles.cardLabel}>Headline</p>
-              <button className={styles.copyBlock} onClick={() => handleAddTextOverlay(currentSection.headline, "headline")} type="button">
-                {currentSection.headline}
+              <button
+                className={styles.copyBlock}
+                onClick={() =>
+                  handleAddTextOverlay(
+                    {
+                      ko: currentSection.headline,
+                      en: currentSection.headline_en
+                    },
+                    "headline"
+                  )
+                }
+                type="button"
+              >
+                {getLocalizedCopy(currentSection.headline, currentSection.headline_en, defaultCopyLanguage)}
               </button>
             </div>
 
             <div className={styles.copySection}>
               <p className={styles.cardLabel}>Subheadline</p>
-              <button className={styles.copyBlockSoft} onClick={() => handleAddTextOverlay(currentSection.subheadline, "subheadline")} type="button">
-                {currentSection.subheadline}
+              <button
+                className={styles.copyBlockSoft}
+                onClick={() =>
+                  handleAddTextOverlay(
+                    {
+                      ko: currentSection.subheadline,
+                      en: currentSection.subheadline_en
+                    },
+                    "subheadline"
+                  )
+                }
+                type="button"
+              >
+                {getLocalizedCopy(currentSection.subheadline, currentSection.subheadline_en, defaultCopyLanguage)}
               </button>
             </div>
 
@@ -892,8 +1037,21 @@ export function PdpEditor({
               <div className={styles.copySection}>
                 <p className={styles.cardLabel}>Key Points</p>
                 <div className={styles.bulletStack}>
-                  {currentSection.bullets.map((bullet, index) => (
-                    <button className={styles.bulletButton} key={`${bullet}-${index}`} onClick={() => handleAddTextOverlay(bullet, "keypoint")} type="button">
+                  {getLocalizedBullets(currentSection, defaultCopyLanguage).map((bullet, index) => (
+                    <button
+                      className={styles.bulletButton}
+                      key={`${bullet}-${index}`}
+                      onClick={() =>
+                        handleAddTextOverlay(
+                          {
+                            ko: currentSection.bullets[index] ?? bullet,
+                            en: currentSection.bullets_en[index] ?? currentSection.bullets[index] ?? bullet
+                          },
+                          "keypoint"
+                        )
+                      }
+                      type="button"
+                    >
                       <CheckCircle2 size={14} />
                       {bullet}
                     </button>
@@ -905,13 +1063,19 @@ export function PdpEditor({
             {currentSection.trust_or_objection_line ? (
               <div className={styles.trustBox}>
                 <p className={styles.cardLabel}>Trust / Objection</p>
-                <p>{currentSection.trust_or_objection_line}</p>
+                <p>
+                  {getLocalizedCopy(
+                    currentSection.trust_or_objection_line,
+                    currentSection.trust_or_objection_line_en,
+                    defaultCopyLanguage
+                  )}
+                </p>
               </div>
             ) : null}
 
             {currentSection.CTA ? (
               <button className={styles.ctaPreview} type="button">
-                {currentSection.CTA}
+                {getLocalizedCopy(currentSection.CTA, currentSection.CTA_en, defaultCopyLanguage)}
               </button>
             ) : null}
           </div>
@@ -951,7 +1115,11 @@ export function PdpEditor({
   };
 
   const selectedModelSummary = currentOptions.withModel
-    ? `${getModelCountryLabel(currentOptions.modelCountry)} ${getModelAgeLabel(currentOptions.modelAgeRange)} ${getModelGenderLabel(currentOptions.modelGender)}`
+    ? usesReferenceModel
+      ? referenceModelUsage === "all-sections"
+        ? "업로드 모델 일관성 유지"
+        : "히어로우 업로드 모델 사용"
+      : `${getModelCountryLabel(currentOptions.modelCountry)} ${getModelAgeLabel(currentOptions.modelAgeRange)} ${getModelGenderLabel(currentOptions.modelGender)}`
     : "모델 없이 제품 중심";
 
   const handleGenerateImage = async () => {
@@ -970,7 +1138,10 @@ export function PdpEditor({
             ...currentOptions,
             headline: currentSection.headline,
             subheadline: currentSection.subheadline,
-            isRegeneration: Boolean(currentSection.generatedImage)
+            isRegeneration: Boolean(currentSection.generatedImage),
+            referenceModelImageBase64: usesReferenceModel ? referenceModelImage?.base64 : undefined,
+            referenceModelImageMimeType: usesReferenceModel ? referenceModelImage?.mimeType : undefined,
+            referenceModelImageFileName: usesReferenceModel ? referenceModelImage?.fileName : undefined
           }
         })
       });
@@ -992,14 +1163,17 @@ export function PdpEditor({
             : section
         )
       );
-      setNotice(`${currentSection.section_name} 이미지를 새 옵션으로 업데이트했습니다.`);
+      setNotice(`${getDisplaySectionName(currentSection)} 이미지를 새 옵션으로 업데이트했습니다.`);
     } catch (error) {
       setIsGeneratingImage(false);
       setErrorMessage(error instanceof Error ? error.message : "이미지를 다시 만들지 못했습니다.");
     }
   };
 
-  const handleAddTextOverlay = (text: string, type: "headline" | "subheadline" | "keypoint" | "default" = "default") => {
+  const handleAddTextOverlay = (
+    translations: Record<PdpCopyLanguage, string>,
+    type: "headline" | "subheadline" | "keypoint" | "default" = "default"
+  ) => {
     if (!currentSection.generatedImage) {
       setErrorMessage("이미지를 먼저 생성해야 텍스트를 올릴 수 있습니다.");
       return;
@@ -1007,7 +1181,13 @@ export function PdpEditor({
 
     const defaultFontSize =
       type === "headline" ? 42 : type === "subheadline" ? 24 : type === "keypoint" ? 18 : 20;
-    const displayText = type === "keypoint" ? `• ${text}` : text;
+    const normalizedTranslations = type === "keypoint"
+      ? {
+          ko: `• ${translations.ko}`,
+          en: `• ${translations.en}`
+        }
+      : translations;
+    const displayText = normalizedTranslations[defaultCopyLanguage] || normalizedTranslations.ko;
     const defaultFontWeight = type === "subheadline" ? "500" : "700";
     const estimatedBox = estimateOverlayBox(displayText, {
       fontSize: defaultFontSize,
@@ -1019,14 +1199,17 @@ export function PdpEditor({
 
     const newOverlay: TextOverlay = {
       id: crypto.randomUUID(),
+      kind: "text",
       text: displayText,
+      language: defaultCopyLanguage,
+      translations: normalizedTranslations,
       x: 52,
       y: 52,
       width: estimatedBox.width,
       height: estimatedBox.height,
       fontSize: defaultFontSize,
       color: textColorRecommendations[0] ?? "#ffffff",
-      backgroundColor: backgroundColorRecommendations[0] ?? "#102532",
+      backgroundColor: shapeColorRecommendations[0] ?? "#102532",
       backgroundEnabled: false,
       backgroundOpacity: 0.72,
       backgroundRadius: 18,
@@ -1050,14 +1233,46 @@ export function PdpEditor({
       ...current,
       isOpen: true
     }));
-    setNotice("텍스트를 추가했습니다. 드래그하면 다른 텍스트 선에 자석처럼 맞춰 정렬할 수 있습니다.");
+    setNotice("텍스트를 추가했습니다. 위치와 크기를 직접 조절해 레이아웃을 완성해 보세요.");
   };
 
-  const updateOverlay = (overlayId: string, updates: Partial<TextOverlay>) => {
+  const handleAddShapeLayer = () => {
+    if (!currentSection.generatedImage) {
+      setErrorMessage("이미지를 먼저 생성해야 배경 사각형을 배치할 수 있습니다.");
+      return;
+    }
+
+    const newShape: ShapeLayer = normalizeShapeLayer({
+      id: crypto.randomUUID(),
+      kind: "shape",
+      x: 64,
+      y: 64,
+      width: 260,
+      height: 120,
+      fillColor: shapeColorRecommendations[0] ?? colorRecommendations.darkColor,
+      fillOpacity: 0.74,
+      borderRadius: 28
+    });
+
+    setOverlaysBySection((current) => ({
+      ...current,
+      [currentSectionIndex]: [...(current[currentSectionIndex] ?? []), newShape]
+    }));
+    setSelectedOverlayId(newShape.id);
+    setEditingOverlayId(null);
+    setWorkbenchTab("layer");
+    setWorkbenchState((current) => ({
+      ...current,
+      isOpen: true
+    }));
+    setNotice("배경 사각형을 추가했습니다. 드래그와 리사이즈로 자유롭게 레이아웃을 만들 수 있습니다.");
+  };
+
+  const updateOverlay = (overlayId: string, updates: Partial<CanvasLayer>) => {
     setOverlaysBySection((current) => ({
       ...current,
       [currentSectionIndex]: (current[currentSectionIndex] ?? []).map((overlay) =>
-        overlay.id === overlayId ? normalizeTextOverlay({ ...overlay, ...updates }) : overlay
+        overlay.id === overlayId ? normalizeCanvasLayer({ ...overlay, ...updates }) : overlay
       )
     }));
   };
@@ -1073,16 +1288,16 @@ export function PdpEditor({
     }
   };
 
-  const handleResizeStart = (overlay: TextOverlay) => {
+  const handleResizeStart = (overlay: CanvasLayer) => {
     resizeSessionRef.current[overlay.id] = {
       width: toNumericSize(overlay.width, 320),
       height: toNumericSize(overlay.height, 92),
-      fontSize: overlay.fontSize
+      fontSize: isTextLayer(overlay) ? overlay.fontSize : 0
     };
   };
 
   const handleResize = (
-    overlay: TextOverlay,
+    overlay: CanvasLayer,
     direction: string,
     ref: HTMLElement,
     position: { x: number; y: number }
@@ -1090,7 +1305,7 @@ export function PdpEditor({
     const base = resizeSessionRef.current[overlay.id] ?? {
       width: toNumericSize(overlay.width, 320),
       height: toNumericSize(overlay.height, 92),
-      fontSize: overlay.fontSize
+      fontSize: isTextLayer(overlay) ? overlay.fontSize : 0
     };
 
     const nextWidth = ref.offsetWidth;
@@ -1114,6 +1329,16 @@ export function PdpEditor({
       return;
     }
 
+    if (isShapeLayer(overlay)) {
+      updateOverlay(overlay.id, {
+        width: nextWidth,
+        height: nextHeight,
+        x: position.x,
+        y: position.y
+      });
+      return;
+    }
+
     const scale = Math.max(nextWidth / Math.max(base.width, 1), nextHeight / Math.max(base.height, 1));
     const nextFontSize = clampValue(Math.round(base.fontSize * scale), 10, 180);
 
@@ -1130,32 +1355,10 @@ export function PdpEditor({
     delete resizeSessionRef.current[overlayId];
   };
 
-  const handleOverlayDrag = (overlay: TextOverlay, x: number, y: number) => {
-    const snapped = getSnappedOverlayPosition(
-      {
-        id: overlay.id,
-        x,
-        y,
-        width: toNumericSize(overlay.width, 320),
-        height: toNumericSize(overlay.height, 92)
-      },
-      currentOverlays
-    );
-
-    setSnapGuides({
-      vertical: snapped.verticalGuide,
-      horizontal: snapped.horizontalGuide
-    });
+  const handleOverlayDrag = (overlay: CanvasLayer, x: number, y: number) => {
     updateOverlay(overlay.id, {
-      x: snapped.x,
-      y: snapped.y
-    });
-  };
-
-  const clearSnapGuides = () => {
-    setSnapGuides({
-      vertical: null,
-      horizontal: null
+      x,
+      y
     });
   };
 
@@ -1168,6 +1371,7 @@ export function PdpEditor({
       const previousSelected = selectedOverlayId;
       setSelectedOverlayId(null);
       setEditingOverlayId(null);
+      setActiveColorPalette(null);
       await new Promise((resolve) => setTimeout(resolve, 80));
 
       const canvas = await html2canvas(imageContainerRef.current, {
@@ -1185,7 +1389,7 @@ export function PdpEditor({
       link.download = `pdp-${currentSection.section_id.toLowerCase()}.jpg`;
       link.href = canvas.toDataURL("image/jpeg", 0.92);
       link.click();
-      setNotice(`${currentSection.section_name} 컷을 다운로드했습니다.`);
+      setNotice(`${getDisplaySectionName(currentSection)} 컷을 다운로드했습니다.`);
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : "이미지를 다운로드하지 못했습니다.");
     }
@@ -1193,11 +1397,10 @@ export function PdpEditor({
 
   return (
     <main className={styles.page}>
-      <section className={styles.editorShell} onClick={() => setSelectedOverlayId(null)}>
+      <section className={styles.editorShell} onClick={clearLayerSelection}>
         <header className={styles.editorHeader} onClick={stopShellClick}>
           <div>
-            <span className={styles.toolKicker}>팀 한이룸</span>
-            <h1 className={styles.editorHeading}>상세페이지 마법사 2.0</h1>
+            <h1 className={styles.editorHeading}>한이룸의 상세페이지 마법사 2.0</h1>
             <p className={styles.editorSubcopy}>섹션 컷을 고르고 텍스트를 배치한 뒤 바로 완성본을 저장하세요.</p>
           </div>
 
@@ -1239,24 +1442,24 @@ export function PdpEditor({
           <aside className={styles.sectionRail} onClick={stopShellClick}>
             <div className={styles.railCard}>
               <p className={styles.sidebarLabel}>현재 섹션</p>
-              <h2 className={styles.railTitle}>{currentSection.section_name}</h2>
-              <p className={styles.railDescription}>{currentSection.goal}</p>
+              <h2 className={styles.railTitle}>{getDisplaySectionName(currentSection)}</h2>
+              <p className={styles.railDescription}>{getDisplaySectionGoal(currentSection)}</p>
               <div className={styles.progressTrack}>
                 <div className={styles.progressFill} style={{ width: `${progressPercent}%` }} />
               </div>
-              <div className={styles.metricGrid}>
-                <div className={styles.metricCard}>
-                  <span>현재 섹션</span>
+                <div className={styles.metricGrid}>
+                  <div className={styles.metricCard}>
+                    <span>현재 섹션</span>
                   <strong>
                     {currentSectionIndex + 1}/{sections.length}
                   </strong>
-                </div>
-                <div className={styles.metricCard}>
-                  <span>텍스트</span>
-                  <strong>{currentOverlays.length}</strong>
+                  </div>
+                  <div className={styles.metricCard}>
+                    <span>레이어</span>
+                    <strong>{currentLayers.length}</strong>
+                  </div>
                 </div>
               </div>
-            </div>
 
             <div className={styles.sectionRailCard}>
               <p className={styles.sidebarLabel}>섹션 목록</p>
@@ -1272,8 +1475,8 @@ export function PdpEditor({
                       {section.generatedImage && index !== currentSectionIndex ? <CheckCircle2 size={12} /> : index + 1}
                     </span>
                     <span className={styles.sectionButtonCopy}>
-                      <strong>{section.section_name}</strong>
-                      <small>{section.goal || "전환 목적을 정리한 섹션"}</small>
+                      <strong>{getDisplaySectionName(section)}</strong>
+                      <small>{getDisplaySectionGoal(section) || "전환 목적을 정리한 섹션"}</small>
                     </span>
                   </button>
                 ))}
@@ -1326,8 +1529,8 @@ export function PdpEditor({
               <div className={styles.canvasHeader}>
                 <div>
                   <p className={styles.panelLabel}>편집 섹션</p>
-                  <h2 className={styles.panelTitle}>{currentSection.section_name}</h2>
-                  <p className={styles.panelDescription}>{currentSection.goal}</p>
+                  <h2 className={styles.panelTitle}>{getDisplaySectionName(currentSection)}</h2>
+                  <p className={styles.panelDescription}>{getDisplaySectionGoal(currentSection)}</p>
                 </div>
 
                 <div className={styles.canvasActions}>
@@ -1353,42 +1556,46 @@ export function PdpEditor({
                 </div>
               </div>
 
-              <div className={styles.previewStage} ref={previewStageRef}>
-                <div className={styles.workbenchDock}>
-                  <button
-                    className={workbenchTab === "image" && workbenchState.isOpen ? styles.workbenchDockButtonActive : styles.workbenchDockButton}
-                    onClick={() => openWorkbench("image")}
-                    type="button"
-                  >
-                    <Settings2 size={15} />
-                    이미지
-                  </button>
-                  <button
-                    className={workbenchTab === "layer" && workbenchState.isOpen ? styles.workbenchDockButtonActive : styles.workbenchDockButton}
-                    onClick={() => openWorkbench("layer")}
-                    type="button"
-                  >
-                    <Type size={15} />
-                    텍스트 편집
-                  </button>
-                  <button
-                    className={workbenchTab === "copy" && workbenchState.isOpen ? styles.workbenchDockButtonActive : styles.workbenchDockButton}
-                    onClick={() => openWorkbench("copy")}
-                    type="button"
-                  >
-                    <Sparkles size={15} />
-                    카피
-                  </button>
-                  <button
-                    className={workbenchTab === "guide" && workbenchState.isOpen ? styles.workbenchDockButtonActive : styles.workbenchDockButton}
-                    onClick={() => openWorkbench("guide")}
-                    type="button"
-                  >
-                    <Palette size={15} />
-                    가이드
-                  </button>
-                </div>
+              <div className={styles.canvasToolbar}>
+                <button
+                  className={workbenchTab === "image" && workbenchState.isOpen ? styles.workbenchDockButtonActive : styles.workbenchDockButton}
+                  onClick={() => openWorkbench("image")}
+                  type="button"
+                >
+                  <Settings2 size={15} />
+                  이미지
+                </button>
+                <button
+                  className={workbenchTab === "layer" && workbenchState.isOpen ? styles.workbenchDockButtonActive : styles.workbenchDockButton}
+                  onClick={() => openWorkbench("layer")}
+                  type="button"
+                >
+                  <Type size={15} />
+                  텍스트 편집
+                </button>
+                <button
+                  className={workbenchTab === "copy" && workbenchState.isOpen ? styles.workbenchDockButtonActive : styles.workbenchDockButton}
+                  onClick={() => openWorkbench("copy")}
+                  type="button"
+                >
+                  <Sparkles size={15} />
+                  카피
+                </button>
+                <button className={styles.workbenchDockCreateButton} onClick={handleAddShapeLayer} type="button">
+                  <Square size={15} />
+                  배경 사각형 추가
+                </button>
+                <button
+                  className={workbenchTab === "guide" && workbenchState.isOpen ? styles.workbenchDockButtonActive : styles.workbenchDockButton}
+                  onClick={() => openWorkbench("guide")}
+                  type="button"
+                >
+                  <Palette size={15} />
+                  가이드
+                </button>
+              </div>
 
+              <div className={styles.previewStage} ref={previewStageRef}>
                 {currentSection.generatedImage ? (
                   <div className={styles.imageCanvas} ref={imageContainerRef}>
                     <img
@@ -1398,24 +1605,17 @@ export function PdpEditor({
                       src={currentSection.generatedImage}
                     />
 
-                    {snapGuides.vertical !== null ? (
-                      <div className={styles.snapGuideVertical} style={{ left: `${snapGuides.vertical}px` }} />
-                    ) : null}
-                    {snapGuides.horizontal !== null ? (
-                      <div className={styles.snapGuideHorizontal} style={{ top: `${snapGuides.horizontal}px` }} />
-                    ) : null}
-
-                    {currentOverlays.map((overlay) => (
+                    {[...currentShapeLayers, ...currentTextLayers].map((overlay) => (
                       <Rnd
                         bounds="parent"
-                        className={`${styles.overlayBox} ${selectedOverlayId === overlay.id ? styles.overlaySelected : ""}`}
+                        className={`${styles.overlayBox} ${isShapeLayer(overlay) ? styles.shapeLayerBox : styles.textLayerBox} ${selectedOverlayId === overlay.id ? styles.overlaySelected : ""}`}
                         enableUserSelectHack={false}
                         enableResizing={
                           selectedOverlayId === overlay.id
                             ? {
-                                top: false,
+                                top: true,
                                 right: true,
-                                bottom: false,
+                                bottom: true,
                                 left: true,
                                 topRight: true,
                                 bottomRight: true,
@@ -1429,15 +1629,14 @@ export function PdpEditor({
                           event.stopPropagation();
                           setSelectedOverlayId(overlay.id);
                         }}
-                        onDragStart={() => setSelectedOverlayId(overlay.id)}
-                        onDrag={(_, data) => handleOverlayDrag(overlay, data.x, data.y)}
-                        onDragStop={(_, data) => {
-                          handleOverlayDrag(overlay, data.x, data.y);
-                          clearSnapGuides();
+                        onDragStart={() => {
+                          setSelectedOverlayId(overlay.id);
+                          setActiveColorPalette(null);
                         }}
+                        onDrag={(_, data) => handleOverlayDrag(overlay, data.x, data.y)}
+                        onDragStop={(_, data) => handleOverlayDrag(overlay, data.x, data.y)}
                         onResize={(_, direction, ref, __, position) => handleResize(overlay, direction, ref, position)}
                         onResizeStart={() => {
-                          clearSnapGuides();
                           handleResizeStart(overlay);
                         }}
                         onResizeStop={(_, direction, ref, __, position) => {
@@ -1446,6 +1645,8 @@ export function PdpEditor({
                         }}
                         position={{ x: overlay.x, y: overlay.y }}
                         resizeHandleClasses={{
+                          top: styles.resizeHandleTop,
+                          bottom: styles.resizeHandleBottom,
                           left: styles.resizeHandleLeft,
                           right: styles.resizeHandleRight,
                           topLeft: styles.resizeHandleTopLeft,
@@ -1453,41 +1654,56 @@ export function PdpEditor({
                           bottomLeft: styles.resizeHandleBottomLeft,
                           bottomRight: styles.resizeHandleBottomRight
                         }}
+                        style={{
+                          zIndex: isShapeLayer(overlay)
+                            ? selectedOverlayId === overlay.id
+                              ? 2
+                              : 1
+                            : selectedOverlayId === overlay.id
+                              ? 5
+                              : 4
+                        }}
                         size={{ width: overlay.width, height: overlay.height }}
                       >
-                        <div
-                          className={`${editingOverlayId === overlay.id ? styles.overlayEditing : styles.overlayContent} ${styles.overlayDragSurface}`}
-                          onDoubleClick={(event) => {
-                            event.stopPropagation();
-                            setSelectedOverlayId(overlay.id);
-                            setEditingOverlayId(overlay.id);
-                          }}
-                          style={buildOverlayShellStyle(overlay)}
-                        >
-                          {overlay.backgroundEnabled ? (
-                            <div className={styles.overlayBackdrop} style={buildOverlayBackgroundStyle(overlay)} />
-                          ) : null}
-                          {editingOverlayId === overlay.id ? (
-                            <textarea
-                              autoFocus
-                              className={styles.overlayTextarea}
-                              onBlur={() => setEditingOverlayId(null)}
-                              onChange={(event) => updateOverlay(overlay.id, { text: event.target.value })}
-                              onKeyDown={(event) => {
-                                if (event.key === "Enter" && !event.shiftKey) {
-                                  event.preventDefault();
-                                  setEditingOverlayId(null);
-                                }
-                              }}
-                              style={buildOverlayTextStyle(overlay)}
-                              value={overlay.text}
-                            />
-                          ) : (
-                            <div className={styles.overlayTextLayer} style={buildOverlayTextStyle(overlay)}>
-                              {overlay.text}
-                            </div>
-                          )}
-                        </div>
+                        {isShapeLayer(overlay) ? (
+                          <div className={`${styles.overlayContent} ${styles.overlayDragSurface}`}>
+                            <div className={styles.shapeLayerSurface} style={buildShapeLayerStyle(overlay)} />
+                          </div>
+                        ) : (
+                          <div
+                            className={`${editingOverlayId === overlay.id ? styles.overlayEditing : styles.overlayContent} ${styles.overlayDragSurface}`}
+                            onDoubleClick={(event) => {
+                              event.stopPropagation();
+                              setSelectedOverlayId(overlay.id);
+                              setEditingOverlayId(overlay.id);
+                            }}
+                            style={buildOverlayShellStyle(overlay)}
+                          >
+                            {overlay.backgroundEnabled ? (
+                              <div className={styles.overlayBackdrop} style={buildOverlayBackgroundStyle(overlay)} />
+                            ) : null}
+                            {editingOverlayId === overlay.id ? (
+                              <textarea
+                                autoFocus
+                                className={styles.overlayTextarea}
+                                onBlur={() => setEditingOverlayId(null)}
+                                onChange={(event) => updateTextOverlayContent(overlay.id, event.target.value)}
+                                onKeyDown={(event) => {
+                                  if (event.key === "Enter" && !event.shiftKey) {
+                                    event.preventDefault();
+                                    setEditingOverlayId(null);
+                                  }
+                                }}
+                                style={buildOverlayTextStyle(overlay)}
+                                value={overlay.text}
+                              />
+                            ) : (
+                              <div className={styles.overlayTextLayer} style={buildOverlayTextStyle(overlay)}>
+                                {overlay.text}
+                              </div>
+                            )}
+                          </div>
+                        )}
                       </Rnd>
                     ))}
 
@@ -1555,7 +1771,7 @@ export function PdpEditor({
                         <div className={styles.workbenchHeaderActions}>
                           <button
                             className={styles.inlineButton}
-                            onClick={workbenchTab === "layer" && selectedOverlay ? snapWorkbenchToOverlay : snapWorkbenchToEdge}
+                            onClick={workbenchTab === "layer" && selectedLayer ? snapWorkbenchToOverlay : snapWorkbenchToEdge}
                             type="button"
                           >
                             <RefreshCw size={14} />
@@ -1619,7 +1835,7 @@ export function PdpEditor({
 
               <div className={styles.canvasFooter}>
                 <span className={styles.footerStatus}>{currentSection.generatedImage ? "이미지 준비 완료" : "이미지 생성 필요"}</span>
-                <span className={styles.footerStatus}>텍스트 {currentOverlays.length}개</span>
+                <span className={styles.footerStatus}>레이어 {currentLayers.length}개</span>
                 <span className={styles.footerStatus}>{workbenchState.isOpen ? "플로팅 워크벤치 열림" : "플로팅 워크벤치 닫힘"}</span>
               </div>
             </article>
@@ -1648,8 +1864,18 @@ function buildOverlayBackgroundStyle(overlay: TextOverlay): CSSProperties {
   };
 }
 
+function buildShapeLayerStyle(layer: ShapeLayer): CSSProperties {
+  return {
+    width: "100%",
+    height: "100%",
+    backgroundColor: toRgba(layer.fillColor, layer.fillOpacity),
+    borderRadius: `${layer.borderRadius}px`
+  };
+}
+
 function buildOverlayTextStyle(overlay: TextOverlay): CSSProperties {
   return {
+    display: "block",
     width: "100%",
     height: "100%",
     color: overlay.color,
@@ -1666,17 +1892,34 @@ function buildOverlayTextStyle(overlay: TextOverlay): CSSProperties {
   };
 }
 
-function normalizeOverlayRecord(record: Record<number, TextOverlay[]>) {
+function normalizeOverlayRecord(record: Record<number, CanvasLayer[]>) {
   return Object.fromEntries(
-    Object.entries(record).map(([key, overlays]) => [Number(key), overlays.map((overlay) => normalizeTextOverlay(overlay))])
-  ) as Record<number, TextOverlay[]>;
+    Object.entries(record).map(([key, overlays]) => [Number(key), overlays.map((overlay) => normalizeCanvasLayer(overlay))])
+  ) as Record<number, CanvasLayer[]>;
+}
+
+function normalizeCanvasLayer(layer: Partial<CanvasLayer> & Pick<CanvasLayer, "id" | "x" | "y" | "width" | "height">) {
+  if (layer.kind === "shape") {
+    return normalizeShapeLayer(layer as Partial<ShapeLayer> & Pick<ShapeLayer, "id" | "x" | "y" | "width" | "height">);
+  }
+
+  return normalizeTextOverlay(
+    layer as Partial<TextOverlay> &
+      Pick<TextOverlay, "id" | "text" | "x" | "y" | "width" | "height" | "fontSize" | "color" | "fontFamily" | "fontWeight" | "textAlign" | "lineHeight" | "backgroundColor">
+  );
 }
 
 function normalizeTextOverlay(overlay: Partial<TextOverlay> & Pick<TextOverlay, "id" | "text" | "x" | "y" | "width" | "height" | "fontSize" | "color" | "fontFamily" | "fontWeight" | "textAlign" | "lineHeight" | "backgroundColor">): TextOverlay {
   const hasLegacyBackground = Boolean(overlay.backgroundColor && overlay.backgroundColor !== "transparent");
+  const translations = normalizeOverlayTranslations(overlay.translations, overlay.text);
+  const language = overlay.language === "en" ? "en" : "ko";
 
   return {
     ...overlay,
+    kind: "text",
+    language,
+    text: translations[language] || translations.ko,
+    translations,
     backgroundColor: overlay.backgroundColor === "transparent" ? "#102532" : overlay.backgroundColor,
     backgroundEnabled: overlay.backgroundEnabled ?? hasLegacyBackground,
     backgroundOpacity: overlay.backgroundOpacity ?? 0.72,
@@ -1689,11 +1932,55 @@ function normalizeTextOverlay(overlay: Partial<TextOverlay> & Pick<TextOverlay, 
   };
 }
 
+function applyLanguageToTextOverlay(overlay: TextOverlay, nextLanguage: PdpCopyLanguage): TextOverlay {
+  const translations = normalizeOverlayTranslations(
+    {
+      ...overlay.translations,
+      [overlay.language]: overlay.text
+    },
+    overlay.text
+  );
+  const nextText = translations[nextLanguage] || translations.ko;
+
+  return normalizeTextOverlay({
+    ...overlay,
+    language: nextLanguage,
+    text: nextText,
+    translations: {
+      ...translations,
+      [nextLanguage]: nextText
+    }
+  });
+}
+
+function normalizeShapeLayer(layer: Partial<ShapeLayer> & Pick<ShapeLayer, "id" | "x" | "y" | "width" | "height">): ShapeLayer {
+  return {
+    ...layer,
+    kind: "shape",
+    fillColor: layer.fillColor ?? "#102532",
+    fillOpacity: layer.fillOpacity ?? 0.72,
+    borderRadius: layer.borderRadius ?? 28
+  };
+}
+
 function getOverlayPadding(fontSize: number) {
   return {
     horizontal: clampValue(Math.round(fontSize * 0.32), 10, 24),
     vertical: clampValue(Math.round(fontSize * 0.18), 8, 18)
   };
+}
+
+function normalizeOverlayTranslations(
+  translations: Partial<Record<PdpCopyLanguage, string>> | undefined,
+  fallbackText: string
+) {
+  const ko = translations?.ko?.trim() ? translations.ko : fallbackText;
+  const en = translations?.en?.trim() ? translations.en : ko;
+
+  return {
+    ko,
+    en
+  } satisfies Record<PdpCopyLanguage, string>;
 }
 
 function clampValue(value: number, min: number, max: number) {
@@ -1738,7 +2025,13 @@ function estimateOverlayBox(
   const lineHeightPx = options.fontSize * options.lineHeight;
 
   return {
-    width: Math.round(clampValue(widestLine + horizontalPadding, 96, options.maxWidth)),
+    width: Math.round(
+      clampValue(
+        Math.max(widestLine + horizontalPadding, Math.min(options.maxWidth, Math.max(220, options.fontSize * 8))),
+        96,
+        options.maxWidth
+      )
+    ),
     height: Math.round(clampValue(wrappedLineCount * lineHeightPx + verticalPadding, 40, 220))
   };
 }
@@ -1756,79 +2049,6 @@ function createTextMeasure(options: { fontSize: number; fontWeight: string; font
 
   context.font = `${options.fontWeight} ${options.fontSize}px ${options.fontFamily}`;
   return (text: string) => context.measureText(text).width;
-}
-
-function getSnappedOverlayPosition(
-  moving: { id: string; x: number; y: number; width: number; height: number },
-  overlays: TextOverlay[]
-) {
-  let nextX = moving.x;
-  let nextY = moving.y;
-  let bestVerticalGuide: number | null = null;
-  let bestHorizontalGuide: number | null = null;
-  let closestVertical = SNAP_THRESHOLD + 1;
-  let closestHorizontal = SNAP_THRESHOLD + 1;
-
-  const movingVerticalAnchors = [
-    { guide: moving.x, nextPosition: moving.x },
-    { guide: moving.x + moving.width / 2, nextPosition: moving.x },
-    { guide: moving.x + moving.width, nextPosition: moving.x }
-  ];
-  const movingHorizontalAnchors = [
-    { guide: moving.y, nextPosition: moving.y },
-    { guide: moving.y + moving.height / 2, nextPosition: moving.y },
-    { guide: moving.y + moving.height, nextPosition: moving.y }
-  ];
-
-  overlays
-    .filter((overlay) => overlay.id !== moving.id)
-    .forEach((overlay) => {
-      const width = toNumericSize(overlay.width, 320);
-      const height = toNumericSize(overlay.height, 92);
-      const candidateVerticalGuides = [overlay.x, overlay.x + width / 2, overlay.x + width];
-      const candidateHorizontalGuides = [overlay.y, overlay.y + height / 2, overlay.y + height];
-
-      movingVerticalAnchors.forEach((anchor, anchorIndex) => {
-        candidateVerticalGuides.forEach((guide) => {
-          const distance = Math.abs(anchor.guide - guide);
-          if (distance < closestVertical && distance <= SNAP_THRESHOLD) {
-            closestVertical = distance;
-            bestVerticalGuide = guide;
-            if (anchorIndex === 0) {
-              nextX = guide;
-            } else if (anchorIndex === 1) {
-              nextX = guide - moving.width / 2;
-            } else {
-              nextX = guide - moving.width;
-            }
-          }
-        });
-      });
-
-      movingHorizontalAnchors.forEach((anchor, anchorIndex) => {
-        candidateHorizontalGuides.forEach((guide) => {
-          const distance = Math.abs(anchor.guide - guide);
-          if (distance < closestHorizontal && distance <= SNAP_THRESHOLD) {
-            closestHorizontal = distance;
-            bestHorizontalGuide = guide;
-            if (anchorIndex === 0) {
-              nextY = guide;
-            } else if (anchorIndex === 1) {
-              nextY = guide - moving.height / 2;
-            } else {
-              nextY = guide - moving.height;
-            }
-          }
-        });
-      });
-    });
-
-  return {
-    x: Math.round(nextX),
-    y: Math.round(nextY),
-    verticalGuide: bestVerticalGuide,
-    horizontalGuide: bestHorizontalGuide
-  };
 }
 
 async function extractImageColorRecommendations(imageSrc: string): Promise<ImageColorRecommendations> {
@@ -1900,13 +2120,14 @@ async function extractImageColorRecommendations(imageSrc: string): Promise<Image
     const lightHex = rgbToHex(lightenRgb(light, 0.04));
 
     return {
-      textColors: uniqueColors([
-        getRelativeLuminance(dominant) < 0.48 ? "#F9F7F1" : "#102532",
+      photoColors: uniqueColors(swatches.slice(0, 6).map((swatch) => rgbToHex(swatch.color))),
+      recommendedTextColors: uniqueColors([
+        getRelativeLuminance(dominant) < 0.48 ? "#f9f7f1" : "#102532",
         lightHex,
         darkHex,
         accentHex
       ]),
-      backgroundColors: uniqueColors([
+      recommendedShapeColors: uniqueColors([
         darkHex,
         rgbToHex(mixRgb(dark, accent, 0.28)),
         rgbToHex(mixRgb(light, dark, 0.2)),
@@ -2044,7 +2265,7 @@ function formatSavedAt(value: string) {
 }
 
 function anchorWorkbenchToOverlay(
-  overlay: TextOverlay,
+  overlay: CanvasLayer,
   canvasEl: HTMLDivElement | null,
   stageEl: HTMLDivElement | null,
   workbench: FloatingWorkbenchState
@@ -2072,6 +2293,14 @@ function anchorWorkbenchToOverlay(
     x: Math.round(x),
     y: Math.round(y)
   };
+}
+
+function isTextLayer(layer: CanvasLayer): layer is TextOverlay {
+  return layer.kind === "text";
+}
+
+function isShapeLayer(layer: CanvasLayer): layer is ShapeLayer {
+  return layer.kind === "shape";
 }
 
 function getWorkbenchPosition(stageEl: HTMLDivElement | null) {
@@ -2102,6 +2331,71 @@ function clampWorkbenchToStage(workbench: FloatingWorkbenchState, stageEl: HTMLD
     x: clampValue(workbench.x, 16, maxX),
     y: clampValue(workbench.y, 16, maxY)
   };
+}
+
+function normalizeSectionCopyFields(section: GeneratedResult["blueprint"]["sections"][number]) {
+  return {
+    ...section,
+    headline_en: section.headline_en || section.headline,
+    subheadline_en: section.subheadline_en || section.subheadline,
+    bullets_en: Array.isArray(section.bullets_en) && section.bullets_en.length ? section.bullets_en : section.bullets,
+    trust_or_objection_line_en: section.trust_or_objection_line_en || section.trust_or_objection_line,
+    CTA_en: section.CTA_en || section.CTA
+  };
+}
+
+function getLocalizedCopy(korean: string, english: string | undefined, language: PdpCopyLanguage) {
+  if (language === "en") {
+    return english?.trim() || korean;
+  }
+
+  return korean;
+}
+
+function getLocalizedBullets(section: GeneratedResult["blueprint"]["sections"][number], language: PdpCopyLanguage) {
+  if (language === "en" && Array.isArray(section.bullets_en) && section.bullets_en.length) {
+    return section.bullets_en;
+  }
+
+  return section.bullets;
+}
+
+function getDisplaySectionName(section: GeneratedResult["blueprint"]["sections"][number]) {
+  if (containsHangul(section.section_name)) {
+    return section.section_name;
+  }
+
+  const normalized = section.section_name.replace(/^S\d+[_-]?/i, "");
+  const tokens = normalized.split(/[_-]+/).filter(Boolean);
+
+  if (!tokens.length) {
+    return section.section_name;
+  }
+
+  const mappedTokens = tokens.map((token) => translateSectionToken(token));
+
+  if (mappedTokens.length >= 2 && mappedTokens[0] === "베네핏" && /^\d+$/.test(tokens[1] ?? "")) {
+    const descriptor = mappedTokens.slice(2).join(" ");
+    return descriptor ? `베네핏 ${tokens[1]} · ${descriptor}` : `베네핏 ${tokens[1]}`;
+  }
+
+  return mappedTokens.join(" ");
+}
+
+function getDisplaySectionGoal(section: GeneratedResult["blueprint"]["sections"][number]) {
+  if (containsHangul(section.goal)) {
+    return section.goal;
+  }
+
+  if (containsHangul(section.headline)) {
+    return section.headline;
+  }
+
+  if (containsHangul(section.subheadline)) {
+    return section.subheadline;
+  }
+
+  return section.goal;
 }
 
 function getModelGenderLabel(gender?: ImageGenOptions["modelGender"]) {
@@ -2143,4 +2437,54 @@ function getModelCountryLabel(country?: ImageGenOptions["modelCountry"]) {
   }
 
   return "한국";
+}
+
+function containsHangul(value: string) {
+  return /[가-힣]/.test(value);
+}
+
+function translateSectionToken(token: string) {
+  const normalized = token.trim().toLowerCase();
+
+  if (normalized === "hero") {
+    return "히어로";
+  }
+  if (normalized === "benefit") {
+    return "베네핏";
+  }
+  if (normalized === "evidence") {
+    return "근거";
+  }
+  if (normalized === "review" || normalized === "reviews") {
+    return "후기";
+  }
+  if (normalized === "routine" || normalized === "howto" || normalized === "usage") {
+    return "사용법";
+  }
+  if (normalized === "checklist") {
+    return "체크리스트";
+  }
+  if (normalized === "cta") {
+    return "구매 유도";
+  }
+  if (normalized === "windproof") {
+    return "방풍";
+  }
+  if (normalized === "lightweight") {
+    return "경량";
+  }
+  if (normalized === "style") {
+    return "스타일";
+  }
+  if (normalized === "waterproof") {
+    return "방수";
+  }
+  if (normalized === "comfort") {
+    return "편안함";
+  }
+  if (normalized === "fit") {
+    return "핏";
+  }
+
+  return /^\d+$/.test(token) ? token : token;
 }

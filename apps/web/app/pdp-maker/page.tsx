@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import { PdpMakerClient } from "./PdpMakerClient";
 
 export const metadata: Metadata = {
-  title: "한이룸 상세페이지 마법사 2.0",
+  title: "한이룸의 상세페이지 마법사 2.0",
   description: "제품 이미지를 업로드하면 AI가 상세페이지 구조와 섹션 이미지를 설계해 주는 공개형 도구"
 };
 

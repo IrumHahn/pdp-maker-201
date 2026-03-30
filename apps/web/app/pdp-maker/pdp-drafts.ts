@@ -1,22 +1,37 @@
 "use client";
 
-import type { AspectRatio, GeneratedResult, ImageGenOptions, SectionBlueprint } from "@runacademy/shared";
+import type {
+  AspectRatio,
+  GeneratedResult,
+  ImageGenOptions,
+  PdpCopyLanguage,
+  ReferenceModelUsage,
+  SectionBlueprint
+} from "@runacademy/shared";
 
 const PDP_DRAFT_DB = "hanirum-pdp-maker";
 const PDP_DRAFT_STORE = "drafts";
-const PDP_DRAFT_VERSION = 1;
+const PDP_DRAFT_VERSION = 2;
 
 export type PdpAppState = "upload" | "processing" | "editor";
 export type OverlayTextAlign = "left" | "center" | "right";
 export type WorkbenchTab = "image" | "layer" | "copy" | "guide";
+export type CanvasLayerKind = "text" | "shape";
 
-export interface TextOverlay {
+interface CanvasLayerBase {
   id: string;
-  text: string;
+  kind: CanvasLayerKind;
   x: number;
   y: number;
   width: number | string;
   height: number | string;
+}
+
+export interface TextOverlay extends CanvasLayerBase {
+  kind: "text";
+  text: string;
+  language: PdpCopyLanguage;
+  translations: Record<PdpCopyLanguage, string>;
   fontSize: number;
   color: string;
   backgroundColor: string;
@@ -34,6 +49,15 @@ export interface TextOverlay {
   shadowOffsetY: number;
 }
 
+export interface ShapeLayer extends CanvasLayerBase {
+  kind: "shape";
+  fillColor: string;
+  fillOpacity: number;
+  borderRadius: number;
+}
+
+export type CanvasLayer = TextOverlay | ShapeLayer;
+
 export interface FloatingWorkbenchState {
   x: number;
   y: number;
@@ -46,7 +70,8 @@ export interface PdpEditorDraftState {
   currentSectionIndex: number;
   sections: SectionBlueprint[];
   sectionOptions: Record<number, ImageGenOptions>;
-  overlaysBySection: Record<number, TextOverlay[]>;
+  overlaysBySection: Record<number, CanvasLayer[]>;
+  defaultCopyLanguage: PdpCopyLanguage;
   notice: string;
   workbenchTab: WorkbenchTab;
   workbenchState: FloatingWorkbenchState;
@@ -66,6 +91,8 @@ export interface PdpDraftRecord {
   updatedAt: string;
   appState: PdpAppState;
   preparedImage: PreparedImageDraft | null;
+  modelImage: PreparedImageDraft | null;
+  modelImageUsage: ReferenceModelUsage | null;
   result: GeneratedResult | null;
   additionalInfo: string;
   desiredTone: string;
@@ -119,6 +146,8 @@ export async function savePdpDraft(input: PdpDraftInput): Promise<PdpDraftRecord
     updatedAt: now,
     appState: input.appState,
     preparedImage: input.preparedImage,
+    modelImage: input.modelImage,
+    modelImageUsage: input.modelImageUsage,
     result: input.result,
     additionalInfo: input.additionalInfo,
     desiredTone: input.desiredTone,

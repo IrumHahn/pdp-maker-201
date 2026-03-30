@@ -12,7 +12,7 @@
     "baseUrl": ".",
     "paths": {
       "@runacademy/shared": [
-        "./lib/shared/index.ts"
+        "../../packages/shared/src/index.ts"
       ]
     },
     "lib": [

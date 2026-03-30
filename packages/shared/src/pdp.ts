@@ -3,6 +3,8 @@ export type PdpImageStyle = "studio" | "lifestyle" | "outdoor";
 export type PdpModelGender = "female" | "male";
 export type PdpModelAgeRange = "teen" | "20s" | "30s" | "40s" | "50s_plus";
 export type PdpModelCountry = "korea" | "japan" | "usa" | "france" | "germany" | "africa";
+export type PdpCopyLanguage = "ko" | "en";
+export type ReferenceModelUsage = "hero-only" | "all-sections";
 
 export interface ScorecardItem {
   category: string;
@@ -15,10 +17,15 @@ export interface SectionBlueprint {
   section_name: string;
   goal: string;
   headline: string;
+  headline_en: string;
   subheadline: string;
+  subheadline_en: string;
   bullets: string[];
+  bullets_en: string[];
   trust_or_objection_line: string;
+  trust_or_objection_line_en: string;
   CTA: string;
+  CTA_en: string;
   layout_notes: string;
   compliance_notes: string;
   image_id: string;
@@ -53,11 +60,17 @@ export interface ImageGenOptions {
   headline?: string;
   subheadline?: string;
   isRegeneration?: boolean;
+  referenceModelImageBase64?: string;
+  referenceModelImageMimeType?: string;
+  referenceModelImageFileName?: string;
 }
 
 export interface PdpAnalyzeRequest {
   imageBase64: string;
   mimeType: string;
+  modelImageBase64?: string;
+  modelImageMimeType?: string;
+  modelImageFileName?: string;
   additionalInfo?: string;
   desiredTone?: string;
   aspectRatio: AspectRatio;
