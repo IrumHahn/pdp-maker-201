@@ -1,0 +1,16 @@
+node_modules
+.pnpm-store
+.skill-build
+.next
+.next-prod
+.next_corrupt_*
+.next_mixed_*
+.next_prevercel_backup_*
+dist
+output
+.env
+.env.*
+.local
+coverage
+.DS_Store
+*.tsbuildinfo

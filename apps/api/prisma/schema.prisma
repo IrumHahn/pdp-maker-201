@@ -1,0 +1,657 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum ProviderType {
+  openai
+  gemini
+  claude
+}
+
+enum SourceType {
+  url
+  file
+  text
+}
+
+enum SourceStatus {
+  queued
+  processing
+  indexed
+  failed
+}
+
+enum TicketStatus {
+  open
+  in_progress
+  answered
+}
+
+model Admin {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  passwordHash String?
+  role         String   @default("owner")
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+}
+
+model ChatSession {
+  id        String        @id @default(cuid())
+  userId    String?
+  createdAt DateTime      @default(now())
+  updatedAt DateTime      @updatedAt
+  messages  ChatMessage[]
+}
+
+model ChatMessage {
+  id         String      @id @default(cuid())
+  sessionId  String
+  role       String
+  content    String
+  createdAt  DateTime    @default(now())
+  session    ChatSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([sessionId, createdAt])
+}
+
+model KnowledgeSource {
+  id         String           @id @default(cuid())
+  type       SourceType
+  title      String
+  sourceUrl  String?
+  status     SourceStatus     @default(queued)
+  metadata   Json?
+  createdAt  DateTime         @default(now())
+  updatedAt  DateTime         @updatedAt
+  chunks     KnowledgeChunk[]
+
+  @@index([status])
+}
+
+model KnowledgeChunk {
+  id         String          @id @default(cuid())
+  sourceId   String
+  content    String
+  vectorId   String?
+  createdAt  DateTime        @default(now())
+  source     KnowledgeSource @relation(fields: [sourceId], references: [id], onDelete: Cascade)
+
+  @@index([sourceId])
+}
+
+model PromptSetting {
+  id          String       @id @default(cuid())
+  provider    ProviderType @default(openai)
+  model       String       @default("gpt-4o-mini")
+  promptText  String
+  active      Boolean      @default(true)
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+}
+
+model InquiryTicket {
+  id          String       @id @default(cuid())
+  name        String
+  email       String
+  message     String
+  status      TicketStatus @default(open)
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+  replies     TicketReply[]
+
+  @@index([status, createdAt])
+}
+
+model TicketReply {
+  id          String        @id @default(cuid())
+  ticketId    String
+  subject     String
+  body        String
+  sentAt      DateTime      @default(now())
+  ticket      InquiryTicket @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+
+  @@index([ticketId])
+}
+
+model AuditLog {
+  id          String   @id @default(cuid())
+  actorId     String?
+  action      String
+  targetType  String
+  targetId    String?
+  payload     Json?
+  createdAt   DateTime @default(now())
+
+  @@index([createdAt])
+}
+
+enum SourcingIntakeMode {
+  explore_anything
+  focus_category
+}
+
+enum PreferenceLevel {
+  low
+  medium
+  high
+}
+
+enum HotTrack {
+  BURST
+  STEADY
+  EMERGING
+}
+
+enum RiskLevel {
+  low
+  medium
+  high
+}
+
+enum CompetitionLevel {
+  low
+  medium
+  high
+}
+
+enum OpportunityType {
+  global_popular
+  hidden_gem
+  focus_match
+}
+
+enum ProductEvidenceSourceType {
+  marketplace
+  social
+  search
+  community
+}
+
+enum SourcingRunStatus {
+  queued
+  running
+  completed
+  failed
+}
+
+enum SourcingRunStage {
+  intake
+  discovery
+  trend_enrichment
+  evaluation
+  supplier_research
+  contact_ready
+  negotiation
+}
+
+enum AgentKind {
+  orchestrator
+  search
+  trend
+  evaluation
+  sourcing
+  negotiation
+}
+
+enum AgentTaskStatus {
+  queued
+  running
+  completed
+  failed
+  blocked
+}
+
+enum CompetitionReportStatus {
+  not_started
+  ready
+  needs_input
+  failed
+}
+
+enum SupplierStatus {
+  not_started
+  ready
+  blocked
+}
+
+enum SupplierSourceSite {
+  Alibaba
+  site_1688
+  global_sources
+}
+
+enum MailboxProvider {
+  google
+}
+
+enum MailboxConnectionStatus {
+  not_connected
+  oauth_pending
+  connected
+  setup_required
+}
+
+enum NegotiationThreadStatus {
+  draft
+  awaiting_approval
+  sent
+  awaiting_supplier
+  supplier_replied
+  ready_to_reply
+  closed
+}
+
+enum NegotiationMessageDirection {
+  outbound
+  inbound
+  internal
+}
+
+enum ApprovalStatus {
+  pending
+  approved
+  rejected
+}
+
+enum TrendTimeUnit {
+  date
+  week
+  month
+}
+
+enum TrendProfileStatus {
+  active
+  paused
+}
+
+enum TrendCollectionRunStatus {
+  queued
+  running
+  completed
+  failed
+}
+
+enum TrendCollectionTaskStatus {
+  pending
+  running
+  completed
+  failed
+}
+
+enum TrendSyncStatus {
+  idle
+  syncing
+  synced
+  failed
+}
+
+model User {
+  id                 String              @id @default(cuid())
+  email              String              @unique
+  name               String?
+  createdAt          DateTime            @default(now())
+  updatedAt          DateTime            @updatedAt
+  sourcingIntakes    SourcingIntake[]
+  mailboxConnections MailboxConnection[]
+}
+
+model SourcingIntake {
+  id                    String             @id @default(cuid())
+  userId                String
+  mode                  SourcingIntakeMode
+  interests             String[]
+  excludedCategories    String[]
+  targetPriceBand       String
+  targetMarginPercent   Int
+  shippingSensitivity   PreferenceLevel
+  regulationSensitivity PreferenceLevel
+  sourcingCountries     String[]
+  notes                 String?
+  createdAt             DateTime           @default(now())
+  updatedAt             DateTime           @updatedAt
+  user                  User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  runs                  DiscoveryRun[]
+
+  @@index([userId, createdAt])
+}
+
+model DiscoveryRun {
+  id             String            @id @default(cuid())
+  intakeId       String
+  status         SourcingRunStatus @default(queued)
+  currentStage   SourcingRunStage  @default(intake)
+  stageLabel     String
+  summary        String?
+  candidateCount Int               @default(0)
+  createdAt      DateTime          @default(now())
+  updatedAt      DateTime          @updatedAt
+  completedAt    DateTime?
+  intake         SourcingIntake    @relation(fields: [intakeId], references: [id], onDelete: Cascade)
+  tasks          AgentTask[]
+  candidates     ProductCandidate[]
+
+  @@index([intakeId, status, currentStage])
+}
+
+model AgentTask {
+  id           String          @id @default(cuid())
+  runId        String
+  stage        SourcingRunStage
+  agent        AgentKind
+  status       AgentTaskStatus @default(queued)
+  title        String
+  summary      String
+  inputSummary String?
+  outputSummary String?
+  retries      Int             @default(0)
+  errorMessage String?
+  startedAt    DateTime?
+  completedAt  DateTime?
+  run          DiscoveryRun    @relation(fields: [runId], references: [id], onDelete: Cascade)
+
+  @@index([runId, stage, status])
+}
+
+model ProductCandidate {
+  id                    String                  @id @default(cuid())
+  runId                 String
+  canonicalName         String
+  localizedName         String
+  category              String
+  track                 HotTrack
+  whyHot                String
+  targetCustomer        String
+  koreanAngle           String
+  riskLevel             RiskLevel
+  riskLabels            String[]
+  demandScore           Int
+  trendScore            Int
+  koreaFitScore         Int
+  sourcingEaseScore     Int
+  riskAdjustedScore     Int
+  overallScore          Int
+  evidenceCount         Int                     @default(0)
+  opportunityType       OpportunityType
+  opportunityTitle      String
+  globalPopularityLabel String
+  hiddenOpportunityLabel String
+  koreaCompetitionLabel String
+  estimatedMarginPercent Int
+  evaluationReasons     String[]
+  competitionStatus     CompetitionReportStatus @default(not_started)
+  supplierStatus        SupplierStatus          @default(not_started)
+  whoShouldSell         String
+  notes                 String
+  recommendedActions    String[]
+  createdAt             DateTime                @default(now())
+  updatedAt             DateTime                @updatedAt
+  run                   DiscoveryRun            @relation(fields: [runId], references: [id], onDelete: Cascade)
+  evidences             CandidateEvidence[]
+  competitionReport     CompetitionReport?
+  supplierLeads         SupplierLead[]
+  negotiationThreads    NegotiationThread[]
+  drafts                NegotiationDraft[]
+
+  @@index([runId, overallScore])
+}
+
+model CandidateEvidence {
+  id          String                    @id @default(cuid())
+  candidateId String
+  sourceName  String
+  sourceType  ProductEvidenceSourceType
+  sourceUrl   String
+  summary     String
+  metricLabel String
+  metricValue String
+  confidence  Float
+  capturedAt  DateTime                  @default(now())
+  candidate   ProductCandidate          @relation(fields: [candidateId], references: [id], onDelete: Cascade)
+
+  @@index([candidateId])
+}
+
+model CompetitionReport {
+  id                  String                  @id @default(cuid())
+  candidateId         String                  @unique
+  status              CompetitionReportStatus @default(not_started)
+  source              String
+  keyword             String
+  priceMinKrw         Int
+  priceMedianKrw      Int
+  priceMaxKrw         Int
+  sellerDensity       String
+  reviewDensity       String
+  searchInterest      String
+  competitionLevel    CompetitionLevel
+  competitionSummary  String
+  insightSummary      String
+  riskSummary         String
+  differentiationIdeas String[]
+  confidence          Float
+  collectedAt         DateTime                @default(now())
+  candidate           ProductCandidate        @relation(fields: [candidateId], references: [id], onDelete: Cascade)
+
+  @@index([status, collectedAt])
+}
+
+model SupplierLead {
+  id                String             @id @default(cuid())
+  candidateId       String
+  sourceSite        SupplierSourceSite
+  supplierName      String
+  supplierCountry   String
+  moq               String
+  unitPriceRange    String
+  leadTime          String
+  confidence        Float
+  contactNote       String
+  riskLevel         RiskLevel
+  searchUrl         String
+  sampleAvailable   Boolean            @default(false)
+  oemAvailable      Boolean            @default(false)
+  capabilitySummary String
+  contactEmail      String?
+  createdAt         DateTime           @default(now())
+  candidate         ProductCandidate   @relation(fields: [candidateId], references: [id], onDelete: Cascade)
+  negotiationThreads NegotiationThread[]
+  drafts            NegotiationDraft[]
+
+  @@index([candidateId, sourceSite])
+}
+
+model MailboxConnection {
+  id                   String                  @id @default(cuid())
+  userId               String
+  provider             MailboxProvider         @default(google)
+  status               MailboxConnectionStatus @default(not_connected)
+  email                String?
+  displayName          String?
+  scope                String[]
+  authUrl              String?
+  connectedAt          DateTime?
+  lastSyncedAt         DateTime?
+  isMock               Boolean                 @default(true)
+  accessTokenEncrypted String?
+  refreshTokenEncrypted String?
+  expiresAt            DateTime?
+  user                 User                    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  negotiationThreads   NegotiationThread[]
+
+  @@index([userId, provider, status])
+}
+
+model NegotiationThread {
+  id                   String                  @id @default(cuid())
+  candidateId          String
+  supplierLeadId       String
+  mailboxConnectionId  String?
+  status               NegotiationThreadStatus @default(draft)
+  summary              String
+  nextRecommendedAction String
+  targetUnitPriceUsd   Float
+  maxMoq               Int
+  askSample            Boolean                 @default(true)
+  desiredIncoterm      String
+  bannedPhrases        String[]
+  createdAt            DateTime                @default(now())
+  updatedAt            DateTime                @updatedAt
+  candidate            ProductCandidate        @relation(fields: [candidateId], references: [id], onDelete: Cascade)
+  supplierLead         SupplierLead            @relation(fields: [supplierLeadId], references: [id], onDelete: Cascade)
+  mailboxConnection    MailboxConnection?      @relation(fields: [mailboxConnectionId], references: [id], onDelete: SetNull)
+  drafts               NegotiationDraft[]
+  messages             NegotiationMessage[]
+  approvals            ApprovalRequest[]
+
+  @@index([candidateId, status])
+}
+
+model NegotiationDraft {
+  id             String            @id @default(cuid())
+  threadId       String
+  candidateId    String
+  supplierLeadId String
+  subject        String
+  body           String
+  checklist      String[]
+  status         String
+  createdAt      DateTime          @default(now())
+  thread         NegotiationThread @relation(fields: [threadId], references: [id], onDelete: Cascade)
+  candidate      ProductCandidate  @relation(fields: [candidateId], references: [id], onDelete: Cascade)
+  supplierLead   SupplierLead      @relation(fields: [supplierLeadId], references: [id], onDelete: Cascade)
+  approvals      ApprovalRequest[]
+
+  @@index([threadId, createdAt])
+}
+
+model NegotiationMessage {
+  id             String                      @id @default(cuid())
+  threadId       String
+  direction      NegotiationMessageDirection
+  subject        String
+  body           String
+  summary        String
+  extractedTerms Json?
+  createdAt      DateTime                    @default(now())
+  thread         NegotiationThread           @relation(fields: [threadId], references: [id], onDelete: Cascade)
+
+  @@index([threadId, createdAt])
+}
+
+model ApprovalRequest {
+  id        String         @id @default(cuid())
+  threadId  String
+  draftId   String
+  status    ApprovalStatus @default(pending)
+  createdAt DateTime       @default(now())
+  decidedAt DateTime?
+  thread    NegotiationThread @relation(fields: [threadId], references: [id], onDelete: Cascade)
+  draft     NegotiationDraft  @relation(fields: [draftId], references: [id], onDelete: Cascade)
+
+  @@index([threadId, status, createdAt])
+}
+
+model TrendProfile {
+  id                 String               @id @default(cuid())
+  slug               String               @unique
+  name               String
+  categoryCid        Int
+  categoryPath       String
+  categoryDepth      Int
+  timeUnit           TrendTimeUnit        @default(month)
+  devices            String[]
+  genders            String[]
+  ages               String[]
+  spreadsheetId      String
+  status             TrendProfileStatus   @default(active)
+  startPeriod        String
+  endPeriod          String
+  lastCollectedPeriod String?
+  lastSyncedAt       DateTime?
+  syncStatus         TrendSyncStatus      @default(idle)
+  latestRunId        String?
+  createdAt          DateTime             @default(now())
+  updatedAt          DateTime             @updatedAt
+  runs               TrendCollectionRun[]
+  tasks              TrendCollectionTask[]
+  snapshots          TrendKeywordSnapshot[]
+
+  @@index([status, updatedAt])
+}
+
+model TrendCollectionRun {
+  id              String                   @id @default(cuid())
+  profileId       String
+  status          TrendCollectionRunStatus @default(queued)
+  requestedBy     String
+  runType         String
+  startPeriod     String
+  endPeriod       String
+  totalTasks      Int                      @default(0)
+  completedTasks  Int                      @default(0)
+  failedTasks     Int                      @default(0)
+  totalSnapshots  Int                      @default(0)
+  sheetUrl        String?
+  startedAt       DateTime?
+  completedAt     DateTime?
+  failureReason   String?
+  createdAt       DateTime                 @default(now())
+  updatedAt       DateTime                 @updatedAt
+  profile         TrendProfile             @relation(fields: [profileId], references: [id], onDelete: Cascade)
+  tasks           TrendCollectionTask[]
+  snapshots       TrendKeywordSnapshot[]
+
+  @@index([profileId, status, updatedAt])
+}
+
+model TrendCollectionTask {
+  id             String                    @id @default(cuid())
+  runId          String
+  profileId      String
+  period         String
+  status         TrendCollectionTaskStatus @default(pending)
+  completedPages Int                       @default(0)
+  totalPages     Int
+  retryCount     Int                       @default(0)
+  startedAt      DateTime?
+  completedAt    DateTime?
+  failureReason  String?
+  failureSnippet String?
+  updatedAt      DateTime                  @updatedAt
+  run            TrendCollectionRun        @relation(fields: [runId], references: [id], onDelete: Cascade)
+  profile        TrendProfile              @relation(fields: [profileId], references: [id], onDelete: Cascade)
+  snapshots      TrendKeywordSnapshot[]
+
+  @@index([runId, status, period])
+  @@index([profileId, period])
+}
+
+model TrendKeywordSnapshot {
+  id           String              @id @default(cuid())
+  profileId    String
+  runId        String
+  taskId       String
+  period       String
+  rank         Int
+  keyword      String
+  linkId       String
+  categoryCid  Int
+  categoryPath String
+  devices      String[]
+  genders      String[]
+  ages         String[]
+  collectedAt  DateTime            @default(now())
+  profile      TrendProfile        @relation(fields: [profileId], references: [id], onDelete: Cascade)
+  run          TrendCollectionRun  @relation(fields: [runId], references: [id], onDelete: Cascade)
+  task         TrendCollectionTask @relation(fields: [taskId], references: [id], onDelete: Cascade)
+
+  @@unique([profileId, period, rank])
+  @@index([runId, period])
+  @@index([profileId, collectedAt])
+}

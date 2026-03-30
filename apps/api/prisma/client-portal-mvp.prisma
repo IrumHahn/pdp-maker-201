@@ -1,0 +1,719 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum UserType {
+  internal
+  client
+}
+
+enum OrganizationType {
+  agency
+  client
+  partner
+}
+
+enum OrganizationMemberRole {
+  owner
+  manager
+  contributor
+  client_admin
+  client_member
+}
+
+enum ProjectMemberRole {
+  owner
+  manager
+  contributor
+  client_admin
+  client_member
+  viewer
+}
+
+enum Visibility {
+  internal
+  client_shared
+}
+
+enum ProjectStatus {
+  setup
+  collecting_content
+  design_review
+  feature_alignment
+  building
+  qa
+  delivered
+  live
+  warranty
+  paused
+  archived
+}
+
+enum PaymentStatus {
+  pending
+  paid
+  overdue
+  refunded
+  waived
+}
+
+enum MilestoneStatus {
+  not_started
+  in_progress
+  waiting_client
+  blocked
+  done
+}
+
+enum TaskStatus {
+  not_started
+  in_progress
+  waiting_client
+  blocked
+  done
+  cancelled
+}
+
+enum TaskPriority {
+  low
+  medium
+  high
+  urgent
+}
+
+enum UpdateType {
+  progress
+  blocker
+  client_action
+  delivery
+  meeting_summary
+  announcement
+}
+
+enum FileCategory {
+  contract
+  content
+  design
+  development
+  delivery
+  meeting
+  legal
+  training
+}
+
+enum ApprovalType {
+  design_concept
+  feature_scope
+  final_delivery
+  change_request
+  go_live
+}
+
+enum ApprovalStatus {
+  pending
+  approved
+  rejected
+  approved_by_timeout
+  cancelled
+}
+
+enum ApprovalEventType {
+  requested
+  reminded
+  approved
+  rejected
+  auto_approved
+  cancelled
+}
+
+enum MeetingType {
+  kickoff
+  design_review
+  feature_review
+  final_review
+  training
+}
+
+enum MeetingStatus {
+  scheduled
+  completed
+  cancelled
+}
+
+enum ConversationType {
+  project
+  change_request
+  approval
+  support
+}
+
+enum ChangeRequestScope {
+  included
+  maintenance
+  new_scope
+}
+
+enum ChangeRequestStatus {
+  submitted
+  under_review
+  quoted
+  approved
+  rejected
+  scheduled
+  completed
+}
+
+enum IntegrationType {
+  domain
+  framer_hosting
+  booking_calendar
+  ai_chatbot
+  newsletter
+  analytics
+  other
+}
+
+enum BillingOwner {
+  agency
+  client
+  shared
+  unknown
+}
+
+enum IntegrationStatus {
+  planned
+  active
+  handed_over
+  paused
+  cancelled
+}
+
+enum NotificationType {
+  invite
+  new_message
+  approval_requested
+  approval_decided
+  content_due
+  meeting_reminder
+  project_update
+  delivery_notice
+  system
+}
+
+enum NotificationChannel {
+  in_app
+  email
+}
+
+enum NotificationStatus {
+  queued
+  sent
+  failed
+  read
+  dismissed
+}
+
+enum ContentRequestStatus {
+  requested
+  submitted
+  approved
+  incomplete
+  waived
+}
+
+model UserProfile {
+  id                       String                    @id @db.Uuid
+  email                    String                    @unique
+  displayName              String?
+  phone                    String?
+  userType                 UserType
+  avatarUrl                String?
+  lastLoginAt              DateTime?                 @db.Timestamptz(6)
+  createdAt                DateTime                  @default(now()) @db.Timestamptz(6)
+  updatedAt                DateTime                  @updatedAt @db.Timestamptz(6)
+  organizationMemberships  OrganizationMember[]
+  projectMemberships       ProjectMember[]
+  authoredProjects         Project[]                 @relation("ProjectCreatedBy")
+  assignedMilestones       Milestone[]               @relation("MilestoneOwner")
+  assignedTasks            Task[]                    @relation("TaskAssignee")
+  updates                  ProjectUpdate[]           @relation("ProjectUpdateAuthor")
+  uploadedFiles            ProjectFile[]             @relation("ProjectFileUploader")
+  createdApprovals         ApprovalRequest[]         @relation("ApprovalCreatedBy")
+  decidedApprovals         ApprovalRequest[]         @relation("ApprovalDecidedBy")
+  approvalEvents           ApprovalEvent[]           @relation("ApprovalEventActor")
+  createdMeetings          Meeting[]                 @relation("MeetingCreatedBy")
+  meetingParticipations    MeetingParticipant[]
+  meetingNotes             MeetingNote[]             @relation("MeetingNoteAuthor")
+  conversationParticipants ConversationParticipant[]
+  sentMessages             Message[]                 @relation("MessageSender")
+  requestedChangeRequests  ChangeRequest[]           @relation("ChangeRequestedBy")
+  reviewedChangeRequests   ChangeRequest[]           @relation("ChangeReviewedBy")
+  managedIntegrations      ServiceIntegration[]      @relation("IntegrationManagedBy")
+  notifications            Notification[]
+  activityLogs             ActivityLog[]             @relation("ActivityActor")
+  contentRequestsCreated   ContentRequest[]          @relation("ContentRequestCreatedBy")
+  contentRequestsReviewed  ContentRequest[]          @relation("ContentRequestReviewedBy")
+}
+
+model Organization {
+  id                  String               @id @default(uuid()) @db.Uuid
+  name                String
+  slug                String               @unique
+  organizationType    OrganizationType
+  primaryContactName  String?
+  primaryContactEmail String?
+  primaryContactPhone String?
+  notes               String?
+  createdAt           DateTime             @default(now()) @db.Timestamptz(6)
+  updatedAt           DateTime             @updatedAt @db.Timestamptz(6)
+  members             OrganizationMember[]
+  clientProjects      Project[]            @relation("ClientOrganizationProjects")
+  agencyProjects      Project[]            @relation("AgencyOrganizationProjects")
+}
+
+model OrganizationMember {
+  id               String                 @id @default(uuid()) @db.Uuid
+  organizationId   String                 @db.Uuid
+  userId           String                 @db.Uuid
+  role             OrganizationMemberRole
+  isPrimaryContact Boolean                @default(false)
+  joinedAt         DateTime               @default(now()) @db.Timestamptz(6)
+  organization     Organization           @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user             UserProfile            @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([organizationId, userId])
+  @@index([userId])
+}
+
+model Project {
+  id                    String              @id @default(uuid()) @db.Uuid
+  clientOrganizationId  String              @db.Uuid
+  agencyOrganizationId  String              @db.Uuid
+  createdById           String              @db.Uuid
+  code                  String              @unique
+  slug                  String              @unique
+  name                  String
+  description           String?
+  status                ProjectStatus       @default(setup)
+  visibility            Visibility          @default(client_shared)
+  progressPct           Int                 @default(0)
+  paymentStatus         PaymentStatus       @default(pending)
+  startedAt             DateTime?           @db.Timestamptz(6)
+  contractStartAt       DateTime?           @db.Timestamptz(6)
+  contractEndAt         DateTime?           @db.Timestamptz(6)
+  deliveryDueAt         DateTime?           @db.Timestamptz(6)
+  launchedAt            DateTime?           @db.Timestamptz(6)
+  warrantyEndsAt        DateTime?           @db.Timestamptz(6)
+  createdAt             DateTime            @default(now()) @db.Timestamptz(6)
+  updatedAt             DateTime            @updatedAt @db.Timestamptz(6)
+  clientOrganization    Organization        @relation("ClientOrganizationProjects", fields: [clientOrganizationId], references: [id], onDelete: Restrict)
+  agencyOrganization    Organization        @relation("AgencyOrganizationProjects", fields: [agencyOrganizationId], references: [id], onDelete: Restrict)
+  createdBy             UserProfile         @relation("ProjectCreatedBy", fields: [createdById], references: [id], onDelete: Restrict)
+  contracts             Contract[]
+  members               ProjectMember[]
+  milestones            Milestone[]
+  tasks                 Task[]
+  updates               ProjectUpdate[]
+  files                 ProjectFile[]
+  approvals             ApprovalRequest[]
+  meetings              Meeting[]
+  contentRequests       ContentRequest[]
+  conversations         Conversation[]
+  changeRequests        ChangeRequest[]
+  integrations          ServiceIntegration[]
+  notifications         Notification[]
+  activityLogs          ActivityLog[]
+
+  @@index([clientOrganizationId])
+  @@index([status, deliveryDueAt])
+}
+
+model Contract {
+  id                           String       @id @default(uuid()) @db.Uuid
+  projectId                    String       @db.Uuid
+  sourceFileId                 String?      @db.Uuid
+  title                        String
+  summary                      String?
+  contractAmountKrw            Int
+  vatIncluded                  Boolean      @default(false)
+  paymentTerms                 String?
+  signedAt                     DateTime?    @db.Timestamptz(6)
+  paidAt                       DateTime?    @db.Timestamptz(6)
+  contentDueAt                 DateTime?    @db.Timestamptz(6)
+  acceptanceWindowBusinessDays Int          @default(3)
+  warrantyDays                 Int          @default(30)
+  includedMeetingCount         Int          @default(3)
+  createdAt                    DateTime     @default(now()) @db.Timestamptz(6)
+  updatedAt                    DateTime     @updatedAt @db.Timestamptz(6)
+  project                      Project      @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  sourceFile                   ProjectFile? @relation("ContractSourceFile", fields: [sourceFileId], references: [id], onDelete: SetNull)
+
+  @@index([projectId])
+}
+
+model ProjectMember {
+  id              String            @id @default(uuid()) @db.Uuid
+  projectId       String            @db.Uuid
+  userId          String            @db.Uuid
+  role            ProjectMemberRole
+  canViewInternal Boolean           @default(false)
+  canApprove      Boolean           @default(false)
+  joinedAt        DateTime          @default(now()) @db.Timestamptz(6)
+  project         Project           @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  user            UserProfile       @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([projectId, userId])
+  @@index([userId])
+}
+
+model Milestone {
+  id          String          @id @default(uuid()) @db.Uuid
+  projectId   String          @db.Uuid
+  ownerId     String?         @db.Uuid
+  title       String
+  description String?
+  sortOrder   Int
+  status      MilestoneStatus @default(not_started)
+  visibility  Visibility      @default(client_shared)
+  progressPct Int             @default(0)
+  startAt     DateTime?       @db.Timestamptz(6)
+  dueAt       DateTime?       @db.Timestamptz(6)
+  completedAt DateTime?       @db.Timestamptz(6)
+  createdAt   DateTime        @default(now()) @db.Timestamptz(6)
+  updatedAt   DateTime        @updatedAt @db.Timestamptz(6)
+  project     Project         @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  owner       UserProfile?    @relation("MilestoneOwner", fields: [ownerId], references: [id], onDelete: SetNull)
+  tasks       Task[]
+  updates     ProjectUpdate[]
+
+  @@unique([projectId, sortOrder])
+  @@index([projectId, status])
+}
+
+model Task {
+  id            String       @id @default(uuid()) @db.Uuid
+  projectId     String       @db.Uuid
+  milestoneId   String?      @db.Uuid
+  assigneeId    String?      @db.Uuid
+  title         String
+  description   String?
+  status        TaskStatus   @default(not_started)
+  priority      TaskPriority @default(medium)
+  visibility    Visibility   @default(internal)
+  dueAt         DateTime?    @db.Timestamptz(6)
+  completedAt   DateTime?    @db.Timestamptz(6)
+  blockedReason String?
+  waitingOn     String?
+  createdAt     DateTime     @default(now()) @db.Timestamptz(6)
+  updatedAt     DateTime     @updatedAt @db.Timestamptz(6)
+  project       Project      @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  milestone     Milestone?   @relation(fields: [milestoneId], references: [id], onDelete: SetNull)
+  assignee      UserProfile? @relation("TaskAssignee", fields: [assigneeId], references: [id], onDelete: SetNull)
+
+  @@index([projectId, status, dueAt])
+  @@index([assigneeId, dueAt])
+}
+
+model ProjectUpdate {
+  id                   String       @id @default(uuid()) @db.Uuid
+  projectId            String       @db.Uuid
+  authorId             String       @db.Uuid
+  milestoneId          String?      @db.Uuid
+  title                String
+  summary              String?
+  body                 String
+  updateType           UpdateType   @default(progress)
+  visibility           Visibility   @default(client_shared)
+  progressPct          Int?
+  requiresClientAction Boolean      @default(false)
+  publishedAt          DateTime     @default(now()) @db.Timestamptz(6)
+  project              Project      @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  author               UserProfile  @relation("ProjectUpdateAuthor", fields: [authorId], references: [id], onDelete: Restrict)
+  milestone            Milestone?   @relation(fields: [milestoneId], references: [id], onDelete: SetNull)
+  approvalRequests     ApprovalRequest[] @relation("UpdateApprovals")
+
+  @@index([projectId, publishedAt])
+}
+
+model ProjectFile {
+  id                String            @id @default(uuid()) @db.Uuid
+  projectId         String            @db.Uuid
+  uploadedById      String            @db.Uuid
+  category          FileCategory
+  visibility        Visibility        @default(client_shared)
+  name              String
+  storagePath       String
+  publicUrl         String?
+  mimeType          String?
+  sizeBytes         Int?
+  versionLabel      String?
+  note              String?
+  linkedResourceType String?
+  linkedResourceId  String?
+  createdAt         DateTime          @default(now()) @db.Timestamptz(6)
+  project           Project           @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  uploadedBy        UserProfile       @relation("ProjectFileUploader", fields: [uploadedById], references: [id], onDelete: Restrict)
+  contractSourceFor Contract[]        @relation("ContractSourceFile")
+  approvalRequests  ApprovalRequest[] @relation("ApprovalFile")
+  contentRequests   ContentRequest[]  @relation("ContentRequestFile")
+
+  @@index([projectId, category, createdAt])
+}
+
+model ApprovalRequest {
+  id            String          @id @default(uuid()) @db.Uuid
+  projectId     String          @db.Uuid
+  createdById   String          @db.Uuid
+  decidedById   String?         @db.Uuid
+  relatedUpdateId String?       @db.Uuid
+  relatedFileId String?         @db.Uuid
+  approvalType  ApprovalType
+  title         String
+  message       String?
+  status        ApprovalStatus  @default(pending)
+  requestedAt   DateTime        @default(now()) @db.Timestamptz(6)
+  dueAt         DateTime?       @db.Timestamptz(6)
+  decidedAt     DateTime?       @db.Timestamptz(6)
+  versionLabel  String?
+  resourceType  String?
+  resourceId    String?
+  decisionNote  String?
+  project       Project         @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  createdBy     UserProfile     @relation("ApprovalCreatedBy", fields: [createdById], references: [id], onDelete: Restrict)
+  decidedBy     UserProfile?    @relation("ApprovalDecidedBy", fields: [decidedById], references: [id], onDelete: SetNull)
+  relatedUpdate ProjectUpdate?  @relation("UpdateApprovals", fields: [relatedUpdateId], references: [id], onDelete: SetNull)
+  relatedFile   ProjectFile?    @relation("ApprovalFile", fields: [relatedFileId], references: [id], onDelete: SetNull)
+  events        ApprovalEvent[]
+  changeRequest ChangeRequest?
+
+  @@index([projectId, status, dueAt])
+}
+
+model ApprovalEvent {
+  id                String            @id @default(uuid()) @db.Uuid
+  approvalRequestId String            @db.Uuid
+  actorId           String?           @db.Uuid
+  eventType         ApprovalEventType
+  note              String?
+  createdAt         DateTime          @default(now()) @db.Timestamptz(6)
+  approvalRequest   ApprovalRequest   @relation(fields: [approvalRequestId], references: [id], onDelete: Cascade)
+  actor             UserProfile?      @relation("ApprovalEventActor", fields: [actorId], references: [id], onDelete: SetNull)
+
+  @@index([approvalRequestId, createdAt])
+}
+
+model Meeting {
+  id              String               @id @default(uuid()) @db.Uuid
+  projectId       String               @db.Uuid
+  createdById     String               @db.Uuid
+  meetingType     MeetingType
+  title           String
+  agenda          String?
+  status          MeetingStatus        @default(scheduled)
+  scheduledAt     DateTime             @db.Timestamptz(6)
+  durationMinutes Int?
+  meetingUrl      String?
+  location        String?
+  completedAt     DateTime?            @db.Timestamptz(6)
+  createdAt       DateTime             @default(now()) @db.Timestamptz(6)
+  updatedAt       DateTime             @updatedAt @db.Timestamptz(6)
+  project         Project              @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  createdBy       UserProfile          @relation("MeetingCreatedBy", fields: [createdById], references: [id], onDelete: Restrict)
+  participants    MeetingParticipant[]
+  notes           MeetingNote[]
+
+  @@index([projectId, scheduledAt])
+}
+
+model MeetingParticipant {
+  id              String       @id @default(uuid()) @db.Uuid
+  meetingId       String       @db.Uuid
+  userId          String?      @db.Uuid
+  displayName     String
+  email           String?
+  participantRole String?
+  attended        Boolean?
+  meeting         Meeting      @relation(fields: [meetingId], references: [id], onDelete: Cascade)
+  user            UserProfile? @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([meetingId])
+}
+
+model MeetingNote {
+  id            String      @id @default(uuid()) @db.Uuid
+  meetingId     String      @db.Uuid
+  authorId      String      @db.Uuid
+  visibility    Visibility  @default(internal)
+  summary       String?
+  notesMd       String
+  decisionsMd   String?
+  actionItemsMd String?
+  createdAt     DateTime    @default(now()) @db.Timestamptz(6)
+  updatedAt     DateTime    @updatedAt @db.Timestamptz(6)
+  meeting       Meeting     @relation(fields: [meetingId], references: [id], onDelete: Cascade)
+  author        UserProfile @relation("MeetingNoteAuthor", fields: [authorId], references: [id], onDelete: Restrict)
+
+  @@index([meetingId, createdAt])
+}
+
+model ContentRequest {
+  id           String               @id @default(uuid()) @db.Uuid
+  projectId    String               @db.Uuid
+  createdById  String               @db.Uuid
+  reviewedById String?              @db.Uuid
+  fileId       String?              @db.Uuid
+  title        String
+  description  String?
+  status       ContentRequestStatus @default(requested)
+  visibility   Visibility           @default(client_shared)
+  dueAt        DateTime?            @db.Timestamptz(6)
+  submittedAt  DateTime?            @db.Timestamptz(6)
+  reviewedAt   DateTime?            @db.Timestamptz(6)
+  reviewNote   String?
+  createdAt    DateTime             @default(now()) @db.Timestamptz(6)
+  updatedAt    DateTime             @updatedAt @db.Timestamptz(6)
+  project      Project              @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  createdBy    UserProfile          @relation("ContentRequestCreatedBy", fields: [createdById], references: [id], onDelete: Restrict)
+  reviewedBy   UserProfile?         @relation("ContentRequestReviewedBy", fields: [reviewedById], references: [id], onDelete: SetNull)
+  file         ProjectFile?         @relation("ContentRequestFile", fields: [fileId], references: [id], onDelete: SetNull)
+
+  @@index([projectId, status, dueAt])
+}
+
+model Conversation {
+  id             String                    @id @default(uuid()) @db.Uuid
+  projectId      String                    @db.Uuid
+  conversationType ConversationType        @default(project)
+  title          String
+  visibility     Visibility                @default(client_shared)
+  lastMessageAt  DateTime?                 @db.Timestamptz(6)
+  createdAt      DateTime                  @default(now()) @db.Timestamptz(6)
+  updatedAt      DateTime                  @updatedAt @db.Timestamptz(6)
+  project        Project                   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  participants   ConversationParticipant[]
+  messages       Message[]
+
+  @@index([projectId, lastMessageAt])
+}
+
+model ConversationParticipant {
+  id             String       @id @default(uuid()) @db.Uuid
+  conversationId String       @db.Uuid
+  userId         String       @db.Uuid
+  joinedAt       DateTime     @default(now()) @db.Timestamptz(6)
+  lastReadAt     DateTime?    @db.Timestamptz(6)
+  isMuted        Boolean      @default(false)
+  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  user           UserProfile  @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([conversationId, userId])
+  @@index([userId])
+}
+
+model Message {
+  id              String       @id @default(uuid()) @db.Uuid
+  conversationId  String       @db.Uuid
+  senderId        String       @db.Uuid
+  body            String
+  visibility      Visibility   @default(client_shared)
+  sentAt          DateTime     @default(now()) @db.Timestamptz(6)
+  editedAt        DateTime?    @db.Timestamptz(6)
+  isSystem        Boolean      @default(false)
+  attachmentCount Int          @default(0)
+  conversation    Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  sender          UserProfile  @relation("MessageSender", fields: [senderId], references: [id], onDelete: Restrict)
+
+  @@index([conversationId, sentAt])
+}
+
+model ChangeRequest {
+  id                 String               @id @default(uuid()) @db.Uuid
+  projectId          String               @db.Uuid
+  requestedById      String               @db.Uuid
+  reviewedById       String?              @db.Uuid
+  approvalRequestId  String?              @unique @db.Uuid
+  title              String
+  description        String
+  scope              ChangeRequestScope   @default(new_scope)
+  status             ChangeRequestStatus  @default(submitted)
+  impactScheduleDays Int?
+  impactCostKrw      Int?
+  internalNote       String?
+  clientNote         String?
+  quotedAt           DateTime?            @db.Timestamptz(6)
+  approvedAt         DateTime?            @db.Timestamptz(6)
+  plannedStartAt     DateTime?            @db.Timestamptz(6)
+  plannedEndAt       DateTime?            @db.Timestamptz(6)
+  createdAt          DateTime             @default(now()) @db.Timestamptz(6)
+  updatedAt          DateTime             @updatedAt @db.Timestamptz(6)
+  project            Project              @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  requestedBy        UserProfile          @relation("ChangeRequestedBy", fields: [requestedById], references: [id], onDelete: Restrict)
+  reviewedBy         UserProfile?         @relation("ChangeReviewedBy", fields: [reviewedById], references: [id], onDelete: SetNull)
+  approvalRequest    ApprovalRequest?     @relation(fields: [approvalRequestId], references: [id], onDelete: SetNull)
+
+  @@index([projectId, status, scope])
+}
+
+model ServiceIntegration {
+  id                String            @id @default(uuid()) @db.Uuid
+  projectId         String            @db.Uuid
+  managedById       String?           @db.Uuid
+  integrationType   IntegrationType
+  serviceName       String
+  status            IntegrationStatus @default(planned)
+  billingOwner      BillingOwner      @default(agency)
+  accountEmail      String?
+  startAt           DateTime?         @db.Timestamptz(6)
+  billingTransferAt DateTime?         @db.Timestamptz(6)
+  handoffCompletedAt DateTime?        @db.Timestamptz(6)
+  notes             String?
+  metadata          Json?
+  createdAt         DateTime          @default(now()) @db.Timestamptz(6)
+  updatedAt         DateTime          @updatedAt @db.Timestamptz(6)
+  project           Project           @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  managedBy         UserProfile?      @relation("IntegrationManagedBy", fields: [managedById], references: [id], onDelete: SetNull)
+
+  @@index([projectId, integrationType])
+}
+
+model Notification {
+  id               String              @id @default(uuid()) @db.Uuid
+  userId           String              @db.Uuid
+  projectId        String?             @db.Uuid
+  notificationType NotificationType
+  channel          NotificationChannel
+  status           NotificationStatus  @default(queued)
+  title            String
+  body             String
+  linkPath         String?
+  sentAt           DateTime?           @db.Timestamptz(6)
+  readAt           DateTime?           @db.Timestamptz(6)
+  errorMessage     String?
+  createdAt        DateTime            @default(now()) @db.Timestamptz(6)
+  user             UserProfile         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  project          Project?            @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([userId, status, createdAt])
+}
+
+model ActivityLog {
+  id         String      @id @default(uuid()) @db.Uuid
+  projectId  String?     @db.Uuid
+  actorId    String?     @db.Uuid
+  action     String
+  targetType String
+  targetId   String?
+  visibility Visibility  @default(internal)
+  payload    Json?
+  createdAt  DateTime    @default(now()) @db.Timestamptz(6)
+  project    Project?    @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  actor      UserProfile? @relation("ActivityActor", fields: [actorId], references: [id], onDelete: SetNull)
+
+  @@index([projectId, createdAt])
+  @@index([actorId, createdAt])
+}
