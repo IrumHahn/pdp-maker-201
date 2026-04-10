@@ -1,7 +1,9 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
-  distDir: ".next-prod",
-  reactStrictMode: true
+  reactStrictMode: true,
+  experimental: {
+    externalDir: true
+  }
 };
 
 export default nextConfig;

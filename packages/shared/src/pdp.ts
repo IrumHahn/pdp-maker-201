@@ -96,8 +96,17 @@ export interface PdpGenerateImageSuccessResponse {
   mimeType: string;
 }
 
+export interface PdpValidateApiKeySuccessResponse {
+  ok: true;
+  message: string;
+  analyzeModel: string;
+  imageModel: string;
+}
+
 export type PdpErrorCode =
   | "GEMINI_API_KEY_MISSING"
+  | "GEMINI_API_KEY_INVALID"
+  | "GEMINI_MODEL_ACCESS_DENIED"
   | "INVALID_IMAGE_PAYLOAD"
   | "INVALID_REQUEST"
   | "GEMINI_QUOTA_EXCEEDED"
@@ -114,3 +123,4 @@ export interface PdpErrorResponse {
 
 export type PdpAnalyzeResponse = PdpAnalyzeSuccessResponse | PdpErrorResponse;
 export type PdpGenerateImageResponse = PdpGenerateImageSuccessResponse | PdpErrorResponse;
+export type PdpValidateApiKeyResponse = PdpValidateApiKeySuccessResponse | PdpErrorResponse;

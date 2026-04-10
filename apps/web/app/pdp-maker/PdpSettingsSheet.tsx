@@ -5,6 +5,7 @@ import { KeyRound, ShieldCheck, UserRound } from "lucide-react";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "../../components/ui/sheet";
 import styles from "./pdp-maker.module.css";
 import { type PdpClientSettings, maskGeminiApiKey } from "./pdp-settings";
+import { validateGeminiApiKey } from "./pdp-utils";
 
 interface PdpSettingsSheetProps {
   open: boolean;
@@ -21,27 +22,50 @@ export function PdpSettingsSheet({
 }: PdpSettingsSheetProps) {
   const [localSettings, setLocalSettings] = useState(settings);
   const [errorMessage, setErrorMessage] = useState("");
+  const [successMessage, setSuccessMessage] = useState("");
+  const [isValidating, setIsValidating] = useState(false);
 
   useEffect(() => {
     if (open) {
       setLocalSettings(settings);
       setErrorMessage("");
+      setSuccessMessage("");
+      setIsValidating(false);
     }
   }, [open, settings]);
 
   const maskedCustomApiKey = localSettings.customGeminiApiKey ? maskGeminiApiKey(localSettings.customGeminiApiKey) : "";
   const currentKeyPreview = maskedCustomApiKey || "아직 저장된 개인 Gemini API 키가 없습니다.";
 
-  const handleSave = () => {
+  const handleSave = async () => {
     if (!localSettings.customGeminiApiKey.trim()) {
       setErrorMessage("개인 Gemini API 키를 입력해 주세요.");
       return;
     }
 
-    onSave({
-      customGeminiApiKey: localSettings.customGeminiApiKey.trim()
-    });
-    onOpenChange(false);
+    setIsValidating(true);
+    setErrorMessage("");
+    setSuccessMessage("");
+
+    try {
+      const candidateKey = localSettings.customGeminiApiKey.trim();
+      const validation = await validateGeminiApiKey(candidateKey);
+
+      if (!validation.ok) {
+        setErrorMessage(validation.message);
+        return;
+      }
+
+      onSave({
+        customGeminiApiKey: candidateKey
+      });
+      setSuccessMessage(validation.message);
+      onOpenChange(false);
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : "Gemini API 키 연결 상태를 확인하지 못했습니다.");
+    } finally {
+      setIsValidating(false);
+    }
   };
 
   return (
@@ -95,10 +119,14 @@ export function PdpSettingsSheet({
               <input
                 autoComplete="off"
                 className={styles.settingsInput}
+                disabled={isValidating}
                 onChange={(event) => {
                   setLocalSettings({ customGeminiApiKey: event.target.value });
                   if (errorMessage) {
                     setErrorMessage("");
+                  }
+                  if (successMessage) {
+                    setSuccessMessage("");
                   }
                 }}
                 placeholder="AIza..."
@@ -108,17 +136,18 @@ export function PdpSettingsSheet({
             </label>
 
             <p className={styles.settingsHelper}>
-              개인 키는 Git에 포함되지 않고, 이 브라우저 localStorage에만 저장됩니다. 화면에서는 일부만 가려서 표시합니다.
+              개인 키는 Git에 포함되지 않고, 이 브라우저 localStorage에만 저장됩니다. 저장 전에 Gemini 3.1 Pro Preview와 Gemini 3 Pro Image Preview 접근 가능 여부를 먼저 확인합니다.
             </p>
 
             {errorMessage ? <div className={styles.settingsError}>{errorMessage}</div> : null}
+            {successMessage ? <div className={styles.settingsSuccess}>{successMessage}</div> : null}
 
             <div className={styles.settingsActions}>
-              <button className={styles.secondaryButton} onClick={() => onOpenChange(false)} type="button">
+              <button className={styles.secondaryButton} disabled={isValidating} onClick={() => onOpenChange(false)} type="button">
                 닫기
               </button>
-              <button className={styles.primaryButton} onClick={handleSave} type="button">
-                설정 저장
+              <button className={styles.primaryButton} disabled={isValidating} onClick={() => void handleSave()} type="button">
+                {isValidating ? "키 확인 중..." : "설정 저장"}
               </button>
             </div>
           </section>

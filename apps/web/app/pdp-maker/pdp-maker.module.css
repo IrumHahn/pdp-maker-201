@@ -13,6 +13,7 @@
   margin: 0 auto;
 }
 
+.announcementPanel,
 .savedDraftsPanel {
   margin-top: 22px;
   padding: 22px;
@@ -21,6 +22,14 @@
   background: rgba(255, 255, 255, 0.86);
   box-shadow: 0 24px 60px rgba(18, 33, 47, 0.08);
   backdrop-filter: blur(10px);
+}
+
+.announcementPanel {
+  display: grid;
+  gap: 18px;
+  background:
+    linear-gradient(180deg, rgba(250, 248, 243, 0.96), rgba(255, 255, 255, 0.92)),
+    radial-gradient(circle at top right, rgba(20, 115, 108, 0.08), transparent 28%);
 }
 
 .toolHeader,
@@ -161,6 +170,14 @@
   align-items: flex-end;
 }
 
+.announcementHeader {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: flex-end;
+  gap: 14px;
+}
+
 .savedDraftsTitle {
   margin: 8px 0 0;
   font-size: 28px;
@@ -169,10 +186,60 @@
   color: var(--ink);
 }
 
+.announcementTitle {
+  margin: 8px 0 0;
+  font-size: clamp(24px, 2.4vw, 32px);
+  line-height: 1.08;
+  letter-spacing: -0.04em;
+  color: var(--ink);
+}
+
+.announcementBadge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 10px 14px;
+  border-radius: 999px;
+  background: rgba(20, 115, 108, 0.08);
+  border: 1px solid rgba(20, 115, 108, 0.14);
+  color: var(--teal);
+  font-size: 13px;
+  font-weight: 700;
+}
+
 .savedDraftsMeta {
   display: flex;
   flex-wrap: wrap;
   gap: 10px;
+}
+
+.announcementGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.announcementItem {
+  display: grid;
+  gap: 8px;
+  padding: 18px 20px;
+  border-radius: 22px;
+  background: rgba(255, 255, 255, 0.88);
+  border: 1px solid rgba(18, 33, 47, 0.06);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.65);
+}
+
+.announcementItem strong {
+  font-size: 17px;
+  line-height: 1.42;
+  letter-spacing: -0.03em;
+  color: var(--ink);
+}
+
+.announcementItem p {
+  margin: 0;
+  color: var(--muted);
+  line-height: 1.7;
 }
 
 .statusCard {
@@ -1003,6 +1070,19 @@
   background: rgba(207, 111, 82, 0.1);
   color: #8a3e31;
   border: 1px solid rgba(207, 111, 82, 0.18);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.settingsSuccess {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 14px;
+  border-radius: 16px;
+  background: rgba(20, 115, 108, 0.1);
+  color: var(--teal-deep);
+  border: 1px solid rgba(20, 115, 108, 0.18);
   font-size: 13px;
   font-weight: 600;
 }
@@ -2747,6 +2827,7 @@
 }
 
 @media (max-width: 980px) {
+  .announcementGrid,
   .setupGrid,
   .statusStrip,
   .workflowStrip,
@@ -2778,6 +2859,7 @@
     padding: 20px 12px 48px;
   }
 
+  .announcementPanel,
   .toolHeader,
   .editorHeader,
   .savedDraftsPanel,
@@ -2813,7 +2895,8 @@
   }
 
   .fieldHeaderInline,
-  .optionalUploadHeader {
+  .optionalUploadHeader,
+  .announcementHeader {
     flex-direction: column;
     align-items: flex-start;
   }

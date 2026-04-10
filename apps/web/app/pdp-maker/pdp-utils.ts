@@ -1,7 +1,7 @@
-import type { AspectRatio } from "@runacademy/shared";
+import type { AspectRatio, PdpValidateApiKeyResponse } from "@runacademy/shared";
 import { resolveGeminiApiKeyHeaderValue } from "./pdp-settings";
 
-export const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://127.0.0.1:4000/v1";
+export const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL ?? "/api";
 
 export const RATIO_OPTIONS: Array<{
   value: AspectRatio;
@@ -49,6 +49,16 @@ export async function apiJson<T>(
   });
 
   return response.json() as Promise<T>;
+}
+
+export async function validateGeminiApiKey(geminiApiKey: string) {
+  return apiJson<PdpValidateApiKeyResponse>(
+    "/pdp/validate-key",
+    {
+      method: "GET"
+    },
+    { geminiApiKey }
+  );
 }
 
 export function toDataUrl(mimeType: string, base64: string) {

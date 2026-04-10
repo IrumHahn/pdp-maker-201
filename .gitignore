@@ -3,6 +3,7 @@ node_modules
 .skill-build
 .next
 .next-prod
+.next-prod-broken-*
 .next_corrupt_*
 .next_mixed_*
 .next_prevercel_backup_*
@@ -14,3 +15,5 @@ output
 coverage
 .DS_Store
 *.tsbuildinfo
+eval "$(ssh-agent -s)"
+eval "$(ssh-agent -s)".pub

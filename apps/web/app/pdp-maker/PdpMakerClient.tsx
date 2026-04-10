@@ -14,7 +14,7 @@ import {
   savePdpClientSettings,
   type PdpClientSettings
 } from "./pdp-settings";
-import { RATIO_OPTIONS, TONE_OPTIONS, apiJson, prepareImageFile } from "./pdp-utils";
+import { RATIO_OPTIONS, TONE_OPTIONS, apiJson, prepareImageFile, validateGeminiApiKey } from "./pdp-utils";
 
 type PreparedImage = PreparedImageDraft;
 
@@ -339,6 +339,13 @@ export function PdpMakerClient() {
       return;
     }
 
+    const currentGeminiApiKey = effectiveGeminiApiKey;
+
+    if (!currentGeminiApiKey) {
+      setErrorMessage("설정 메뉴에서 본인 Gemini API 키를 먼저 입력해 주세요.");
+      return;
+    }
+
     if (modelImage && !modelImageUsage) {
       setErrorMessage("모델 이미지를 사용할 방식을 먼저 선택해 주세요.");
       return;
@@ -348,9 +355,20 @@ export function PdpMakerClient() {
     setErrorMessage("");
     setErrorDetail("");
     setShowErrorDetail(false);
-    setLoadingStep("제품을 분석하고 상세페이지 구조를 설계하는 중입니다.");
+    setLoadingStep("입력한 Gemini API 키 연결 상태를 확인하는 중입니다.");
 
     try {
+      const keyValidation = await validateGeminiApiKey(currentGeminiApiKey);
+
+      if (!keyValidation.ok) {
+        setAppState("upload");
+        setErrorMessage(keyValidation.message);
+        setErrorDetail(keyValidation.detail ?? "");
+        return;
+      }
+
+      setLoadingStep("제품을 분석하고 상세페이지 구조를 설계하는 중입니다.");
+
       const response = await apiJson<PdpAnalyzeResponse>("/pdp/analyze", {
         method: "POST",
         body: JSON.stringify({
@@ -363,7 +381,7 @@ export function PdpMakerClient() {
           desiredTone: desiredTone.trim() || undefined,
           aspectRatio
         })
-      }, { geminiApiKey: effectiveGeminiApiKey });
+      }, { geminiApiKey: currentGeminiApiKey });
 
       if (!response.ok) {
         setAppState("upload");
@@ -406,7 +424,7 @@ export function PdpMakerClient() {
   const handleSaveSettings = (nextSettings: PdpClientSettings) => {
     savePdpClientSettings(nextSettings);
     setClientSettings(loadPdpClientSettings());
-    setNotice("개인 Gemini API 키를 저장했습니다. 이 브라우저에서는 입력한 키로 바로 작업할 수 있습니다.");
+    setNotice("개인 Gemini API 키 확인을 마쳤습니다. 이 브라우저에서는 입력한 키로 바로 작업할 수 있습니다.");
   };
 
   if (appState === "editor" && result) {
@@ -460,6 +478,40 @@ export function PdpMakerClient() {
             </button>
           </div>
         </header>
+
+        {appState !== "processing" ? (
+          <section className={styles.announcementPanel}>
+            <div className={styles.announcementHeader}>
+              <div>
+                <span className={styles.panelLabel}>안내 사항</span>
+                <h2 className={styles.announcementTitle}>사용 전 꼭 확인해 주세요</h2>
+              </div>
+              <span className={styles.announcementBadge}>개인 브라우저 기준 저장</span>
+            </div>
+
+            <div className={styles.announcementGrid}>
+              <article className={styles.announcementItem}>
+                <strong>Gemini API 키는 개인용으로 사용됩니다.</strong>
+                <p>이미지 생성 비용은 각자 입력한 본인 Gemini API 키 기준으로 과금됩니다.</p>
+              </article>
+
+              <article className={styles.announcementItem}>
+                <strong>생성 속도는 Gemini API 서버 영향이 가장 큽니다.</strong>
+                <p>상세페이지 분석과 이미지 생성 시간은 Vercel보다 Gemini 응답 시간의 영향이 더 큽니다.</p>
+              </article>
+
+              <article className={styles.announcementItem}>
+                <strong>API 키와 작업 내용은 서버에 저장되지 않습니다.</strong>
+                <p>입력한 API 키와 작업 초안은 각자 사용자의 PC 브라우저에만 저장되므로 안심하고 사용할 수 있습니다.</p>
+              </article>
+
+              <article className={styles.announcementItem}>
+                <strong>시크릿 모드에서는 저장 내용이 사라질 수 있습니다.</strong>
+                <p>시크릿 모드나 브라우저 저장 공간 초기화 환경에서는 다시 접속했을 때 저장된 작업이 보이지 않을 수 있습니다.</p>
+              </article>
+            </div>
+          </section>
+        ) : null}
 
         {appState !== "processing" ? (
           <section className={styles.savedDraftsPanel}>

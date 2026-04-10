@@ -7,7 +7,7 @@ import type {
   PdpAnalyzeRequest,
   PdpErrorCode,
   SectionBlueprint
-} from "@runacademy/shared";
+} from "../shared";
 
 const ANALYZE_MODEL = "gemini-3.1-pro-preview";
 const IMAGE_MODEL = "gemini-3-pro-image-preview";
@@ -47,11 +47,18 @@ type InternalImageGenOptions = ImageGenOptions & {
   guidePriorityMode: PdpGuidePriorityMode;
   referenceModelProfile?: ReferenceModelProfile | null;
   retryDirective?: string;
+  imageModel?: string;
 };
 
 type NormalizedReferenceModelImage = {
   base64: string;
   mimeType: string;
+};
+
+type ModelAccessCheck = {
+  accessible: boolean;
+  status: number;
+  detail?: string;
 };
 
 export class PdpServiceError extends Error {
@@ -66,11 +73,38 @@ export class PdpServiceError extends Error {
 }
 
 export class PdpService {
+  async validateGeminiApiKey(geminiApiKeyOverride?: string) {
+    const apiKey = this.getRequiredApiKey(geminiApiKeyOverride);
+    const analyzeModelAccess = await checkModelAccess(apiKey, ANALYZE_MODEL);
+
+    if (!analyzeModelAccess.accessible) {
+      throw createModelAccessError(ANALYZE_MODEL, analyzeModelAccess);
+    }
+
+    const imageModelAccess = await checkModelAccess(apiKey, IMAGE_MODEL);
+
+    if (!imageModelAccess.accessible) {
+      throw createModelAccessError(IMAGE_MODEL, imageModelAccess);
+    }
+
+    return {
+      message: "입력한 Gemini API 키가 텍스트 분석과 이미지 생성 모델 모두에 연결되었습니다.",
+      analyzeModel: ANALYZE_MODEL,
+      imageModel: IMAGE_MODEL
+    };
+  }
+
   async analyzeProduct(request: PdpAnalyzeRequest, geminiApiKeyOverride?: string) {
+    const apiKey = this.getRequiredApiKey(geminiApiKeyOverride);
     const normalizedImage = sanitizeBase64Payload(request.imageBase64);
     const mimeType = normalizeMimeType(request.mimeType);
     const referenceModelImage = normalizeReferenceModelImage(request.modelImageBase64, request.modelImageMimeType);
-    const client = this.getClient(geminiApiKeyOverride);
+    const client = this.createClient(apiKey);
+    const imageModelAccess = await checkModelAccess(apiKey, IMAGE_MODEL);
+
+    if (!imageModelAccess.accessible) {
+      throw createModelAccessError(IMAGE_MODEL, imageModelAccess);
+    }
     const referenceModelProfile =
       referenceModelImage ? await this.extractReferenceModelProfile(client, referenceModelImage) : null;
 
@@ -180,8 +214,10 @@ export class PdpService {
         subheadline: firstSection.subheadline,
         referenceModelImageBase64: referenceModelImage?.base64,
         referenceModelImageMimeType: referenceModelImage?.mimeType,
-        referenceModelProfile
-      }
+        referenceModelProfile,
+        imageModel: IMAGE_MODEL
+      },
+      client
     });
 
     blueprint.sections[0] = {
@@ -202,7 +238,13 @@ export class PdpService {
     desiredTone?: string;
     options?: ImageGenOptions;
   }, geminiApiKeyOverride?: string) {
-    const client = this.getClient(geminiApiKeyOverride);
+    const apiKey = this.getRequiredApiKey(geminiApiKeyOverride);
+    const client = this.createClient(apiKey);
+    const imageModelAccess = await checkModelAccess(apiKey, IMAGE_MODEL);
+
+    if (!imageModelAccess.accessible) {
+      throw createModelAccessError(IMAGE_MODEL, imageModelAccess);
+    }
     const normalizedReferenceModel = normalizeReferenceModelImage(
       request.options?.referenceModelImageBase64,
       request.options?.referenceModelImageMimeType
@@ -221,7 +263,8 @@ export class PdpService {
             guidePriorityMode: request.options.guidePriorityMode ?? "guide-first",
             referenceModelImageBase64: normalizedReferenceModel?.base64,
             referenceModelImageMimeType: normalizedReferenceModel?.mimeType,
-            referenceModelProfile
+            referenceModelProfile,
+            imageModel: IMAGE_MODEL
           }
         : undefined
     });
@@ -299,7 +342,7 @@ export class PdpService {
         });
 
         const response = await client.models.generateContent({
-          model: IMAGE_MODEL,
+          model: options.imageModel ?? IMAGE_MODEL,
           contents: {
             parts
           },
@@ -355,6 +398,14 @@ export class PdpService {
   }
 
   private getClient(geminiApiKeyOverride?: string) {
+    return this.createClient(this.getRequiredApiKey(geminiApiKeyOverride));
+  }
+
+  private createClient(apiKey: string) {
+    return new GoogleGenAI({ apiKey, apiVersion: "v1alpha" });
+  }
+
+  private getRequiredApiKey(geminiApiKeyOverride?: string) {
     const apiKey = geminiApiKeyOverride?.trim();
 
     if (!apiKey) {
@@ -364,7 +415,7 @@ export class PdpService {
       );
     }
 
-    return new GoogleGenAI({ apiKey, apiVersion: "v1alpha" });
+    return apiKey;
   }
 
   private async extractReferenceModelProfile(client: GoogleGenAI, referenceModelImage: NormalizedReferenceModelImage) {
@@ -474,6 +525,25 @@ export function toPdpErrorResponse(error: unknown) {
 
   const detail = stringifyError(error);
   const message = error instanceof Error ? error.message : "상세페이지 마법사 처리 중 오류가 발생했습니다.";
+
+  if (isInvalidApiKeyError(message)) {
+    return {
+      ok: false as const,
+      code: "GEMINI_API_KEY_INVALID" as const,
+      message: "입력한 Gemini API 키를 확인할 수 없습니다. 키가 올바른지 다시 확인해 주세요.",
+      detail
+    };
+  }
+
+  if (isPermissionError(message)) {
+    return {
+      ok: false as const,
+      code: "GEMINI_MODEL_ACCESS_DENIED" as const,
+      message:
+        "입력한 Gemini API 키로는 현재 상세페이지 생성에 필요한 모델을 사용할 수 없습니다. Gemini 3.1 Pro Preview와 Gemini 3 Pro Image Preview 접근 권한을 확인해 주세요.",
+      detail
+    };
+  }
 
   if (isQuotaError(message)) {
     return {
@@ -893,7 +963,8 @@ function normalizeImageOptions(options?: InternalImageGenOptions): InternalImage
     referenceModelImageMimeType: options?.referenceModelImageMimeType,
     referenceModelImageFileName: options?.referenceModelImageFileName,
     referenceModelProfile: options?.referenceModelProfile ?? null,
-    retryDirective: options?.retryDirective
+    retryDirective: options?.retryDirective,
+    imageModel: options?.imageModel
   };
 }
 
@@ -1220,6 +1291,27 @@ function isQuotaError(message: string) {
   return lowered.includes("429") || lowered.includes("quota") || lowered.includes("resource_exhausted");
 }
 
+function isInvalidApiKeyError(message: string) {
+  const lowered = message.toLowerCase();
+  return (
+    lowered.includes("api key not valid") ||
+    lowered.includes("invalid api key") ||
+    lowered.includes("api_key_invalid") ||
+    lowered.includes("authentication credentials were not provided")
+  );
+}
+
+function isPermissionError(message: string) {
+  const lowered = message.toLowerCase();
+  return (
+    lowered.includes("permission denied") ||
+    lowered.includes("does not have permission") ||
+    lowered.includes("forbidden") ||
+    lowered.includes("model access") ||
+    lowered.includes("not found for api version")
+  );
+}
+
 function isJsonError(message: string) {
   return message.includes("JSON") || message.includes("Unexpected token") || message.includes("Unterminated string");
 }
@@ -1250,6 +1342,87 @@ function uniqueStrings(values: string[]) {
 
 function wait(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function checkModelAccess(apiKey: string, model: string): Promise<ModelAccessCheck> {
+  const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}?key=${encodeURIComponent(apiKey)}`;
+  const response = await fetch(endpoint, {
+    method: "GET",
+    cache: "no-store",
+    headers: {
+      Accept: "application/json"
+    }
+  });
+
+  if (response.ok) {
+    return {
+      accessible: true,
+      status: response.status
+    };
+  }
+
+  const detail = extractGoogleApiErrorMessage(await response.text());
+  return {
+    accessible: false,
+    status: response.status,
+    detail
+  };
+}
+
+function createModelAccessError(model: string, access: ModelAccessCheck) {
+  if (access.status === 400 && access.detail && isInvalidApiKeyError(access.detail)) {
+    return new PdpServiceError(
+      "GEMINI_API_KEY_INVALID",
+      "입력한 Gemini API 키가 올바르지 않습니다. 다시 확인해 주세요.",
+      `${model}: ${access.detail}`
+    );
+  }
+
+  if (access.status === 401) {
+    return new PdpServiceError(
+      "GEMINI_API_KEY_INVALID",
+      "입력한 Gemini API 키가 인증되지 않았습니다. 키를 다시 확인해 주세요.",
+      `${model}: ${access.detail ?? "unauthorized"}`
+    );
+  }
+
+  if (access.status === 403 || access.status === 404) {
+    return new PdpServiceError(
+      "GEMINI_MODEL_ACCESS_DENIED",
+      `입력한 Gemini API 키로는 ${model} 모델에 접근할 수 없습니다.`,
+      access.detail
+        ? `${model}: ${access.detail}`
+        : `${model}: permission denied or model unavailable for this key`
+    );
+  }
+
+  return new PdpServiceError(
+    "PDP_ANALYZE_FAILED",
+    "Gemini API 키 상태를 확인하지 못했습니다. 잠시 후 다시 시도해 주세요.",
+    access.detail ? `${model}: ${access.detail}` : `${model}: HTTP ${access.status}`
+  );
+}
+
+function extractGoogleApiErrorMessage(rawText: string) {
+  const trimmed = rawText.trim();
+
+  if (!trimmed) {
+    return "";
+  }
+
+  try {
+    const parsed = JSON.parse(trimmed) as {
+      error?: {
+        message?: string;
+        status?: string;
+      };
+    };
+    const status = parsed.error?.status?.trim();
+    const message = parsed.error?.message?.trim();
+    return [status, message].filter(Boolean).join(": ");
+  } catch {
+    return trimmed;
+  }
 }
 
 function toDataUrl(mimeType: string, base64: string) {
